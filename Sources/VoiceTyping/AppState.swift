@@ -25,14 +25,28 @@ final class AppState: ObservableObject {
         didSet { LLMConfigStore.save(llmConfig) }
     }
 
+    @Published var asrBackend: ASRBackend {
+        didSet { UserDefaults.standard.set(asrBackend.rawValue, forKey: "asrBackend") }
+    }
+
     @Published var recognizerState: RecognizerState = .unloaded
     @Published var accessibilityGranted: Bool = false
     @Published var microphoneGranted: Bool = false
+
+    /// Bumped when model listings (downloaded/deleted/downloading) change, so menus can refresh.
+    @Published var modelInventoryTick: Int = 0
 
     init() {
         let raw = UserDefaults.standard.string(forKey: "language") ?? Language.default.rawValue
         self.language = Language(rawValue: raw) ?? .default
         self.llmConfig = LLMConfigStore.load()
+
+        let backendRaw = UserDefaults.standard.string(forKey: "asrBackend")
+        if let raw = backendRaw, let b = ASRBackend(rawValue: raw) {
+            self.asrBackend = b
+        } else {
+            self.asrBackend = .default
+        }
     }
 
     var labelTextForCapsule: String {

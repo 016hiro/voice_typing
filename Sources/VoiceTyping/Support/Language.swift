@@ -30,5 +30,16 @@ public enum Language: String, CaseIterable, Codable, Sendable, Identifiable {
         }
     }
 
+    /// Language name Qwen3-ASR expects — full English word, lowercase.
+    public var qwenName: String {
+        switch self {
+        case .en:   return "english"
+        case .zhCN: return "chinese"
+        case .zhTW: return "chinese"
+        case .ja:   return "japanese"
+        case .ko:   return "korean"
+        }
+    }
+
     public static var `default`: Language { .zhCN }
 }

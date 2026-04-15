@@ -8,8 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let audio = AudioCapture()
     let injector = TextInjector()
     let refiner = LLMRefiner()
-    let recognizer: SpeechRecognizer = WhisperKitRecognizer()
     let fnMonitor = FnHotkeyMonitor()
+
+    private var recognizer: SpeechRecognizer!
+    private var activeBackend: ASRBackend = .default
 
     lazy var statusController: StatusItemController = {
         let c = StatusItemController(state: state)
@@ -21,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var cfg = self.state.llmConfig
             cfg.enabled = enabled
             self.state.llmConfig = cfg
+        }
+        c.onASRBackendSelected = { [weak self] backend in
+            self?.switchBackend(to: backend)
         }
         c.onGrantAccessibility = {
             Permissions.openAccessibilitySettings()
@@ -41,24 +46,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pipelineTask: Task<Void, Never>?
     private var permissionTimer: Timer?
     private var infoResetTask: Task<Void, Never>?
+    private var backendSwapTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ModelStore.migrateV010WhisperLayoutIfNeeded()
+
         _ = statusController
 
         refreshPermissions()
         schedulePermissionPolling()
 
-        // Request microphone (OS dialog) up front.
         Task {
             let granted = await Permissions.requestMicrophone()
             self.state.microphoneGranted = granted
             Log.app.info("Microphone granted: \(granted, privacy: .public)")
         }
 
-        // Try to start the Fn tap. If accessibility isn't granted it throws; poller will retry later.
         startFnMonitor()
 
-        // Consume Fn events
         hotkeyConsumeTask = Task { [weak self] in
             guard let self else { return }
             for await transition in self.fnMonitor.events {
@@ -68,24 +73,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Observe recognizer loading/ready state
-        recognizerStateTask = Task { [weak self] in
-            guard let self else { return }
-            for await s in self.recognizer.stateStream {
-                await MainActor.run { [weak self] in
-                    self?.state.recognizerState = s
-                }
-            }
-        }
-
-        // Kick off model prepare. This may download ~1.5 GB on first run.
-        Task.detached { [recognizer] in
-            do {
-                try await recognizer.prepare()
-            } catch {
-                Log.app.error("Recognizer prepare failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
+        // Construct and prepare the initial backend.
+        activateBackend(state.asrBackend, forceReload: true)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -93,7 +82,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyConsumeTask?.cancel()
         recognizerStateTask?.cancel()
         pipelineTask?.cancel()
+        backendSwapTask?.cancel()
         permissionTimer?.invalidate()
+    }
+
+    // MARK: - Backend management
+
+    /// Called by menu. If already active, no-op. Otherwise unload old, swap, prepare new.
+    func switchBackend(to backend: ASRBackend) {
+        guard backend != activeBackend else { return }
+        state.asrBackend = backend
+        activateBackend(backend, forceReload: true)
+    }
+
+    /// (Re)construct the recognizer for `backend` and kick off prepare(). If a previous
+    /// recognizer exists, its observation stream is cancelled first.
+    private func activateBackend(_ backend: ASRBackend, forceReload: Bool) {
+        backendSwapTask?.cancel()
+        recognizerStateTask?.cancel()
+        pipelineTask?.cancel()
+
+        // Unload old Qwen to free weights (WhisperKit doesn't expose unload).
+        if let old = recognizer as? QwenASRRecognizer {
+            old.unload()
+        }
+
+        let newRecognizer = RecognizerFactory.make(backend)
+        self.recognizer = newRecognizer
+        self.activeBackend = backend
+        self.state.recognizerState = .unloaded
+
+        // Observe state stream
+        recognizerStateTask = Task { [weak self] in
+            guard let self else { return }
+            for await s in newRecognizer.stateStream {
+                await MainActor.run { [weak self] in
+                    self?.state.recognizerState = s
+                    // Refresh model inventory when download completes
+                    if case .ready = s {
+                        self?.state.modelInventoryTick &+= 1
+                    }
+                }
+            }
+        }
+
+        // Kick off prepare on detached task — may download
+        backendSwapTask = Task.detached { [recognizer = newRecognizer] in
+            do {
+                try await recognizer.prepare()
+            } catch {
+                Log.app.error("Recognizer prepare failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        // Bump inventory so UI re-reads state.
+        state.modelInventoryTick &+= 1
+    }
+
+    /// Called by Settings after a user deletes a backend's files.
+    func reloadActiveBackendIfAffected(_ backend: ASRBackend) {
+        if backend == activeBackend {
+            activateBackend(backend, forceReload: true)
+        }
+        state.modelInventoryTick &+= 1
     }
 
     // MARK: - Permissions

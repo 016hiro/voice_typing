@@ -1,32 +1,53 @@
 import AppKit
 import SwiftUI
 
+enum SettingsTab: String, CaseIterable, Hashable {
+    case models
+    case llm
+
+    var title: String {
+        switch self {
+        case .models: return "Models"
+        case .llm:    return "LLM"
+        }
+    }
+}
+
 @MainActor
 final class SettingsWindowController {
 
     private let state: AppState
     private var window: NSWindow?
+    private let onRequestReloadBackend: (ASRBackend) -> Void
 
-    init(state: AppState) {
+    init(state: AppState, onRequestReloadBackend: @escaping (ASRBackend) -> Void) {
         self.state = state
+        self.onRequestReloadBackend = onRequestReloadBackend
     }
 
-    func show() {
+    func show(tab: SettingsTab = .models) {
         if let w = window {
+            // If window exists, switch tab and bring to front.
+            (w.contentViewController as? NSHostingController<SettingsView>)?.rootView.selectedTab = tab
             w.makeKeyAndOrderFront(nil)
             NSApplication.shared.activate(ignoringOtherApps: true)
             return
         }
 
-        let view = SettingsView(state: state, onClose: { [weak self] in
-            self?.window?.close()
-        })
+        let view = SettingsView(
+            state: state,
+            selectedTab: tab,
+            onClose: { [weak self] in
+                self?.window?.close()
+            },
+            onRequestReloadBackend: onRequestReloadBackend
+        )
 
         let host = NSHostingController(rootView: view)
         let w = NSWindow(contentViewController: host)
-        w.title = "LLM Refinement Settings"
+        w.title = "VoiceTyping Settings"
         w.styleMask = [.titled, .closable]
-        w.setContentSize(NSSize(width: 520, height: 320))
+        w.setContentSize(NSSize(width: 580, height: 420))
         w.isReleasedWhenClosed = false
         w.center()
 
@@ -38,14 +59,229 @@ final class SettingsWindowController {
 
 private struct SettingsView: View {
     @ObservedObject var state: AppState
+    @State var selectedTab: SettingsTab
+    let onClose: () -> Void
+    let onRequestReloadBackend: (ASRBackend) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TabView(selection: $selectedTab) {
+                ModelsTab(state: state, onRequestReloadBackend: onRequestReloadBackend)
+                    .tabItem { Label("Models", systemImage: "waveform") }
+                    .tag(SettingsTab.models)
+
+                LLMTab(state: state, onClose: onClose)
+                    .tabItem { Label("LLM", systemImage: "sparkles") }
+                    .tag(SettingsTab.llm)
+            }
+            .padding(16)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Close", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(12)
+        }
+        .frame(minWidth: 560, minHeight: 400)
+    }
+}
+
+// MARK: - Models tab
+
+private struct ModelsTab: View {
+    @ObservedObject var state: AppState
+    let onRequestReloadBackend: (ASRBackend) -> Void
+
+    @State private var pendingDelete: ASRBackend?
+    @State private var downloadInFlight: Set<ASRBackend> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Speech Recognition Model")
+                .font(.title3).bold()
+
+            Text("Voice typing runs the selected model locally on Apple Silicon. Switch freely — downloads are cached and kept until you delete them.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 0) {
+                ForEach(ASRBackend.allCases) { backend in
+                    ModelRow(
+                        backend: backend,
+                        state: state,
+                        isDownloading: downloadInFlight.contains(backend),
+                        onSelect: {
+                            onRequestReloadBackend(backend)
+                        },
+                        onDelete: {
+                            pendingDelete = backend
+                        }
+                    )
+                    .id(state.modelInventoryTick) // force refresh when inventory changes
+                    if backend != ASRBackend.allCases.last {
+                        Divider()
+                    }
+                }
+            }
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.secondary.opacity(0.3), lineWidth: 0.5)
+            )
+
+            Spacer()
+
+            Text("Models are stored under `~/Library/Application Support/VoiceTyping/models/`.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .textSelection(.enabled)
+        }
+        .alert("Delete \(pendingDelete?.displayName ?? "") files?",
+               isPresented: .init(
+                   get: { pendingDelete != nil },
+                   set: { if !$0 { pendingDelete = nil } }
+               ),
+               presenting: pendingDelete) { backend in
+            Button("Delete", role: .destructive) {
+                performDelete(backend)
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDelete = nil
+            }
+        } message: { backend in
+            if backend == state.asrBackend {
+                Text("This is the currently active model. Deleting will unload it and you'll need to switch to another model or re-download to use voice typing.")
+            } else {
+                Text("\(backend.estimatedSizeLabel) of weights will be removed. You can re-download later.")
+            }
+        }
+    }
+
+    private func performDelete(_ backend: ASRBackend) {
+        do {
+            try ModelStore.delete(backend)
+            Log.app.info("Deleted model files for \(backend.rawValue, privacy: .public)")
+            if backend == state.asrBackend {
+                // Reloading will hit .failed or .loading immediately; user can then pick another.
+                onRequestReloadBackend(backend)
+            }
+            state.modelInventoryTick &+= 1
+        } catch {
+            Log.app.error("Delete failed for \(backend.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+}
+
+private struct ModelRow: View {
+    let backend: ASRBackend
+    @ObservedObject var state: AppState
+    let isDownloading: Bool
+    let onSelect: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(backend.displayName).bold()
+                    if backend == state.asrBackend {
+                        Text("ACTIVE")
+                            .font(.caption2).bold()
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentColor.opacity(0.18))
+                            .foregroundStyle(Color.accentColor)
+                            .clipShape(Capsule())
+                    }
+                }
+                Text(statusLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if backend == state.asrBackend, case let .loading(p) = state.recognizerState, p >= 0 {
+                ProgressView(value: p)
+                    .frame(width: 80)
+            }
+
+            Button(actionLabel) {
+                onSelect()
+            }
+            .disabled(backend == state.asrBackend && stateIsActive)
+
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .disabled(!ModelStore.isDownloaded(backend))
+            .help(ModelStore.isDownloaded(backend) ? "Delete files" : "Not downloaded")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private var stateIsActive: Bool {
+        if case .ready = state.recognizerState { return true }
+        return false
+    }
+
+    private var statusLabel: String {
+        if backend == state.asrBackend {
+            switch state.recognizerState {
+            case .ready:
+                return "Active · \(sizeOrEstimate())"
+            case .loading(let p):
+                if p < 0 { return "Loading…" }
+                return String(format: "Downloading %d%%", Int(p * 100))
+            case .failed(let err):
+                return "Failed — \(err.localizedDescription)"
+            case .unloaded:
+                return "Preparing…"
+            }
+        }
+        if ModelStore.isDownloaded(backend) {
+            return "Downloaded · \(sizeOrEstimate())"
+        }
+        return "Not downloaded · \(backend.estimatedSizeLabel) to download"
+    }
+
+    private var actionLabel: String {
+        if backend == state.asrBackend {
+            return "Active"
+        }
+        return ModelStore.isDownloaded(backend) ? "Switch" : "Download & Switch"
+    }
+
+    private func sizeOrEstimate() -> String {
+        let onDisk = ModelStore.sizeOnDisk(backend)
+        if onDisk > 1_000_000 {
+            return onDisk.humanReadableBytes
+        }
+        return backend.estimatedSizeLabel
+    }
+}
+
+// MARK: - LLM tab
+
+private struct LLMTab: View {
+    @ObservedObject var state: AppState
+    let onClose: () -> Void
 
     @State private var baseURL: String = ""
     @State private var apiKey: String = ""
     @State private var model: String = ""
     @State private var showAPIKey: Bool = false
     @State private var testStatus: TestStatus = .idle
-
-    let onClose: () -> Void
 
     enum TestStatus: Equatable {
         case idle
@@ -112,12 +348,8 @@ private struct SettingsView: View {
                 Button("Save") { save() }
                     .keyboardShortcut(.return)
                     .buttonStyle(.borderedProminent)
-                Button("Close") { onClose() }
-                    .keyboardShortcut(.cancelAction)
             }
         }
-        .padding(20)
-        .frame(minWidth: 480, minHeight: 300)
         .onAppear { loadCurrent() }
     }
 
@@ -162,7 +394,6 @@ private struct SettingsView: View {
         cfg.apiKey  = apiKey
         cfg.model   = model.trimmingCharacters(in: .whitespaces)
         state.llmConfig = cfg
-        onClose()
     }
 
     private func runTest() {

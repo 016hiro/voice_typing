@@ -8,6 +8,7 @@ public final class WhisperKitRecognizer: SpeechRecognizer, @unchecked Sendable {
 
     private let modelName: String
     private let modelRepo: String
+    private let downloadBase: URL
 
     private var pipeline: WhisperKit?
     private var currentTask: Task<Void, Never>?
@@ -23,9 +24,11 @@ public final class WhisperKitRecognizer: SpeechRecognizer, @unchecked Sendable {
     public let stateStream: AsyncStream<RecognizerState>
 
     public init(model: String = WhisperKitRecognizer.defaultModel,
-                repo: String = WhisperKitRecognizer.defaultRepo) {
+                repo: String = WhisperKitRecognizer.defaultRepo,
+                downloadBase: URL) {
         self.modelName = model
         self.modelRepo = repo
+        self.downloadBase = downloadBase
 
         let (stream, cont) = AsyncStream<RecognizerState>.makeStream(bufferingPolicy: .bufferingNewest(8))
         self.stateStream = stream
@@ -37,13 +40,12 @@ public final class WhisperKitRecognizer: SpeechRecognizer, @unchecked Sendable {
     }
 
     public func prepare() async throws {
-        setState(.loading(progress: -1))   // indeterminate
+        setState(.loading(progress: -1))   // indeterminate — WhisperKit doesn't expose granular progress
 
         do {
-            let folder = ModelStore.modelsURL
             let config = WhisperKitConfig(
                 model: modelName,
-                downloadBase: folder,
+                downloadBase: downloadBase,
                 modelRepo: modelRepo,
                 verbose: false,
                 logLevel: .error,

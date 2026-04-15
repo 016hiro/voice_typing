@@ -15,6 +15,7 @@ final class StatusItemController: NSObject {
     var onLanguageSelected: ((Language) -> Void)?
     var onLLMEnabledChanged: ((Bool) -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onASRBackendSelected: ((ASRBackend) -> Void)?
     var onGrantAccessibility: (() -> Void)?
     var onGrantMicrophone: (() -> Void)?
     var onQuit: (() -> Void)?
@@ -49,6 +50,10 @@ final class StatusItemController: NSObject {
             self?.rebuildMenu()
         }.store(in: &cancellables)
 
+        state.$asrBackend.sink { [weak self] _ in
+            self?.rebuildMenu()
+        }.store(in: &cancellables)
+
         state.$recognizerState.sink { [weak self] _ in
             self?.updateIcon()
             self?.rebuildMenu()
@@ -56,6 +61,10 @@ final class StatusItemController: NSObject {
 
         state.$accessibilityGranted.sink { [weak self] _ in
             self?.updateIcon()
+            self?.rebuildMenu()
+        }.store(in: &cancellables)
+
+        state.$modelInventoryTick.sink { [weak self] _ in
             self?.rebuildMenu()
         }.store(in: &cancellables)
     }
@@ -116,9 +125,9 @@ final class StatusItemController: NSObject {
         if case let .loading(progress) = state.recognizerState {
             let title: String
             if progress < 0 {
-                title = "Preparing model…"
+                title = "Preparing \(state.asrBackend.displayName)…"
             } else {
-                title = String(format: "Preparing model… %d%%", Int(progress * 100))
+                title = String(format: "Preparing %@… %d%%", state.asrBackend.displayName, Int(progress * 100))
             }
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             item.isEnabled = false
@@ -136,6 +145,11 @@ final class StatusItemController: NSObject {
         let langItem = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
         langItem.submenu = buildLanguageMenu()
         menu.addItem(langItem)
+
+        // Model (ASR backend) submenu
+        let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
+        modelItem.submenu = buildModelMenu()
+        menu.addItem(modelItem)
 
         // LLM Refinement submenu
         let llmItem = NSMenuItem(title: "LLM Refinement", action: nil, keyEquivalent: "")
@@ -167,6 +181,57 @@ final class StatusItemController: NSObject {
         return m
     }
 
+    private func buildModelMenu() -> NSMenu {
+        let m = NSMenu()
+
+        for backend in ASRBackend.allCases {
+            let title = modelMenuTitle(for: backend)
+            let item = NSMenuItem(title: title,
+                                  action: #selector(selectASRBackend(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = backend
+            item.state = (backend == state.asrBackend) ? .on : .off
+            m.addItem(item)
+        }
+
+        m.addItem(.separator())
+
+        let manage = NSMenuItem(title: "Manage Models…",
+                                action: #selector(openManageModels),
+                                keyEquivalent: "")
+        manage.target = self
+        m.addItem(manage)
+
+        return m
+    }
+
+    /// "Qwen3-ASR 1.7B · ~1.4 GB · Downloaded" etc.
+    private func modelMenuTitle(for backend: ASRBackend) -> String {
+        let name = backend.displayName
+        let status: String
+
+        if backend == state.asrBackend {
+            if case let .loading(progress) = state.recognizerState, progress >= 0 {
+                status = String(format: "Downloading %d%%", Int(progress * 100))
+            } else if case .loading = state.recognizerState {
+                status = "Loading…"
+            } else if case .ready = state.recognizerState {
+                status = "Active"
+            } else if case .failed = state.recognizerState {
+                status = "Failed"
+            } else {
+                status = "Active"
+            }
+        } else if ModelStore.isDownloaded(backend) {
+            status = "Downloaded"
+        } else {
+            status = "Not downloaded"
+        }
+
+        return "\(name) · \(backend.estimatedSizeLabel) · \(status)"
+    }
+
     private func buildLLMMenu() -> NSMenu {
         let m = NSMenu()
         let enableItem = NSMenuItem(title: state.llmConfig.enabled ? "✓ Enabled" : "Enabled",
@@ -179,7 +244,7 @@ final class StatusItemController: NSObject {
         m.addItem(.separator())
 
         let settingsItem = NSMenuItem(title: "Settings…",
-                                      action: #selector(openSettings),
+                                      action: #selector(openSettingsLLM),
                                       keyEquivalent: ",")
         settingsItem.target = self
         m.addItem(settingsItem)
@@ -194,16 +259,34 @@ final class StatusItemController: NSObject {
         onLanguageSelected?(lang)
     }
 
+    @objc private func selectASRBackend(_ sender: NSMenuItem) {
+        guard let backend = sender.representedObject as? ASRBackend else { return }
+        onASRBackendSelected?(backend)
+    }
+
+    @objc private func openManageModels() {
+        openSettings(tab: .models)
+    }
+
     @objc private func toggleLLM() {
         onLLMEnabledChanged?(!state.llmConfig.enabled)
     }
 
-    @objc private func openSettings() {
+    @objc private func openSettingsLLM() {
+        openSettings(tab: .llm)
+    }
+
+    func openSettings(tab: SettingsTab) {
         onOpenSettings?()
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(state: state)
+            settingsWindowController = SettingsWindowController(
+                state: state,
+                onRequestReloadBackend: { [weak self] backend in
+                    self?.onASRBackendSelected?(backend)
+                }
+            )
         }
-        settingsWindowController?.show()
+        settingsWindowController?.show(tab: tab)
     }
 
     @objc private func grantAccessibility() {
@@ -226,7 +309,6 @@ final class StatusItemController: NSObject {
 
 extension StatusItemController: NSMenuDelegate {
     nonisolated func menuWillOpen(_ menu: NSMenu) {
-        // Refresh labels (Permissions may have changed while menu was inactive)
         Task { @MainActor in self.rebuildMenu() }
     }
 }

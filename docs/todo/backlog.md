@@ -19,14 +19,15 @@
 ### 功能扩展
 
 - [ ] **快捷键可配置**：除 Fn 外提供 Right Option / Right Cmd 等替代方案；Settings 窗口加 hotkey picker。
-- [ ] **多模型快速切换**：菜单加"Model"子菜单（base / small / medium / large-v3），切换后调用 `prepare()`。利用现有 `SpeechRecognizer` 协议，无需重写。
 - [ ] **历史转录记录**：可选保存最近 N 条转录到 Settings → History 标签，支持复制/重新发送。
+
+> 多模型切换已提升为 v0.2.0 主线，详见 [v0.2.0.md](v0.2.0.md)。
 
 ## 中期 (v0.3+)
 
-- [ ] **流式转录**：长录音用 WhisperKit 的 `AudioStreamTranscriber` 边录边出文，胶囊实时显示部分结果。
+- [ ] **流式转录**：长录音边录边出文，胶囊实时显示部分结果。Qwen-0.6B 的 92ms TTFT 在这里才真正有用。
 - [ ] **VAD 自动停止**：除 Fn 松开外，检测到长时间静默自动结束录音。
-- [ ] **替代 ASR 后端**：
+- [ ] **更多 ASR 后端**（v0.2.0 之后的扩展）：
   - whisper.cpp 实现（Intel Mac 支持 + 量化模型选项）
   - Apple SFSpeechRecognizer 实现（无依赖、零下载、低延迟，但中英混杂效果差）
   - OpenAI Whisper API 实现（云端、最高准确度、需 key）
