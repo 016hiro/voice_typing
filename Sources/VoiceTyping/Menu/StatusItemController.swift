@@ -54,10 +54,20 @@ final class StatusItemController: NSObject {
             self?.rebuildMenu()
         }.store(in: &cancellables)
 
+        // Coalesce recognizerState changes: the loading-progress callback fires many
+        // times per second; rebuilding the whole NSMenu on every progress tick caused
+        // visible flicker / "stacked menu" artifacts when the user kept the menu open.
+        // Only rebuild on state-kind transitions (loading→ready, etc.).
         state.$recognizerState.sink { [weak self] _ in
             self?.updateIcon()
-            self?.rebuildMenu()
         }.store(in: &cancellables)
+
+        state.$recognizerState
+            .map { Self.stateKind($0) }
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                self?.rebuildMenu()
+            }.store(in: &cancellables)
 
         state.$accessibilityGranted.sink { [weak self] _ in
             self?.updateIcon()
@@ -72,6 +82,17 @@ final class StatusItemController: NSObject {
     // MARK: - Icon
 
     enum IconState { case idle, recording, loading, needsPermission }
+
+    /// Discriminator for `RecognizerState`'s 4 cases — used to coalesce update bursts
+    /// where only the inner `progress` value changes (which drives flicker).
+    private static func stateKind(_ s: RecognizerState) -> Int {
+        switch s {
+        case .unloaded: return 0
+        case .loading:  return 1
+        case .ready:    return 2
+        case .failed:   return 3
+        }
+    }
 
     private func currentIconState() -> IconState {
         if !state.accessibilityGranted || !state.microphoneGranted {

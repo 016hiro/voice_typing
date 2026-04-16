@@ -32,7 +32,15 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
         }
         self.backend = backend
         self.modelId = id
+        // `Qwen3ASRModel.fromPretrained` expects `cacheDir` to point at the final per-model
+        // directory (`<base>/models/<org>/<model>/`). Internally it strips that suffix to
+        // derive the HubApi downloadBase. If the suffix doesn't match it falls back to
+        // ~/Library/Caches/, which silently splits download (real files) from lookup
+        // (vocab.json/safetensors checked under our path) and load fails.
+        // So we extend the per-backend dir with the expected Hub-style suffix here.
         self.cacheDir = cacheDir
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent(id, isDirectory: true)
 
         let (stream, cont) = AsyncStream<RecognizerState>.makeStream(bufferingPolicy: .bufferingNewest(32))
         self.stateStream = stream
