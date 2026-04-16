@@ -19,13 +19,15 @@ enum ModelStore {
     }
 
     /// Best-effort "is this backend's model already fully downloaded?"
-    /// For WhisperKit: look for argmaxinc/whisperkit-coreml/openai_whisper-large-v3/AudioEncoder.mlmodelc/model.mil
+    /// For WhisperKit: look for the AudioEncoder weights binary. WhisperKit appends
+    /// `models/<repo>/<model>/...` under whatever `downloadBase` we pass it.
     /// For Qwen: look for at least one .safetensors file anywhere under the backend dir.
     static func isDownloaded(_ backend: ASRBackend) -> Bool {
         let dir = directory(for: backend)
         switch backend {
         case .whisperLargeV3:
             let sentinel = dir
+                .appendingPathComponent("models")          // WhisperKit's auto-prefix
                 .appendingPathComponent("argmaxinc")
                 .appendingPathComponent("whisperkit-coreml")
                 .appendingPathComponent("openai_whisper-large-v3")
@@ -68,20 +70,24 @@ enum ModelStore {
 
     // MARK: - Migration
 
-    /// v0.1.0 stored WhisperKit models directly under `models/`. Move them into
-    /// `models/whisperkit/` so the new per-backend layout is consistent. No-op if
-    /// the new layout is already populated or the old layout is empty.
+    /// v0.1.0 passed `~/Library/Application Support/VoiceTyping/models/` to WhisperKit
+    /// as its downloadBase. WhisperKit then created a literal `models/` subdir inside —
+    /// so the v0.1.0 weights actually live at `<modelsURL>/models/argmaxinc/...` and
+    /// `<modelsURL>/models/openai/...`. We move the whole `models/` subtree into the new
+    /// per-backend `whisperkit/` directory so v0.2.0's `downloadBase = .../whisperkit/`
+    /// finds them under `whisperkit/models/argmaxinc/...`.
+    /// No-op if the new layout is already populated or the old layout is empty.
     static func migrateV010WhisperLayoutIfNeeded() {
         let fm = FileManager.default
-        let oldRoot = modelsURL.appendingPathComponent("argmaxinc", isDirectory: true)
+        let oldNested = modelsURL.appendingPathComponent("models", isDirectory: true)
         let newDir = directory(for: .whisperLargeV3)
-        let newMarker = newDir.appendingPathComponent("argmaxinc", isDirectory: true)
+        let newNested = newDir.appendingPathComponent("models", isDirectory: true)
 
-        guard fm.fileExists(atPath: oldRoot.path) else { return }
-        guard !fm.fileExists(atPath: newMarker.path) else { return }
+        guard fm.fileExists(atPath: oldNested.path) else { return }
+        guard !fm.fileExists(atPath: newNested.path) else { return }
 
         do {
-            try fm.moveItem(at: oldRoot, to: newMarker)
+            try fm.moveItem(at: oldNested, to: newNested)
             Log.app.info("Migrated v0.1.0 WhisperKit models into whisperkit/ subdirectory")
         } catch {
             Log.app.warning("v0.1.0 model migration failed: \(error.localizedDescription, privacy: .public)")
