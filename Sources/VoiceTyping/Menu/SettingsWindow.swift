@@ -1,17 +1,45 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
-enum SettingsTab: String, CaseIterable, Hashable {
+enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     case models
     case llm
+    case dictionary
+
+    var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .models: return "Models"
-        case .llm:    return "LLM"
+        case .models:     return "Models"
+        case .llm:        return "LLM"
+        case .dictionary: return "Dictionary"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .models:     return "waveform"
+        case .llm:        return "sparkles"
+        case .dictionary: return "character.book.closed"
         }
     }
 }
+
+// MARK: - Dimensions
+
+/// Keep sizes in one place so the NSWindow content rect and the SwiftUI frame
+/// stay consistent. The outer window is larger than the panel so the glass
+/// shadow has transparent space to spread into.
+private enum Panel {
+    static let width: CGFloat = 640
+    static let height: CGFloat = 560
+    static let cornerRadius: CGFloat = 22
+    /// Breathing room around the panel for the soft shadow.
+    static let shadowMargin: CGFloat = 28
+}
+
+// MARK: - Window controller
 
 @MainActor
 final class SettingsWindowController {
@@ -27,7 +55,6 @@ final class SettingsWindowController {
 
     func show(tab: SettingsTab = .models) {
         if let w = window {
-            // If window exists, switch tab and bring to front.
             (w.contentViewController as? NSHostingController<SettingsView>)?.rootView.selectedTab = tab
             w.makeKeyAndOrderFront(nil)
             NSApplication.shared.activate(ignoringOtherApps: true)
@@ -37,18 +64,40 @@ final class SettingsWindowController {
         let view = SettingsView(
             state: state,
             selectedTab: tab,
-            onClose: { [weak self] in
-                self?.window?.close()
-            },
+            onClose: { [weak self] in self?.window?.close() },
             onRequestReloadBackend: onRequestReloadBackend
         )
 
         let host = NSHostingController(rootView: view)
-        let w = NSWindow(contentViewController: host)
-        w.title = "VoiceTyping Settings"
-        w.styleMask = [.titled, .closable]
-        w.setContentSize(NSSize(width: 580, height: 420))
+        // Hosting view must be fully transparent — any opaque backing will
+        // render as a visible rectangle outside our rounded glass panel.
+        host.view.wantsLayer = true
+        host.view.layer?.backgroundColor = NSColor.clear.cgColor
+
+        // The window is larger than the visible glass panel by `shadowMargin`
+        // on each side. The SwiftUI root centers the panel inside this area;
+        // the surrounding transparent padding is where the Liquid Glass
+        // shadow bleeds into.
+        let outerWidth  = Panel.width  + Panel.shadowMargin * 2
+        let outerHeight = Panel.height + Panel.shadowMargin * 2
+        let w = BorderlessKeyWindow(
+            contentRect: NSRect(x: 0, y: 0, width: outerWidth, height: outerHeight),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        w.contentViewController = host
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        // NSWindow's built-in shadow is always rectangular (follows the
+        // window's frame, not the content's shape). Suppress it and let
+        // SwiftUI's .shadow() modifier follow the rounded panel.
+        w.hasShadow = false
+        w.isMovableByWindowBackground = true
         w.isReleasedWhenClosed = false
+        w.collectionBehavior = [.fullScreenAuxiliary]
+        w.contentView?.wantsLayer = true
+        w.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
         w.center()
 
         self.window = w
@@ -57,6 +106,15 @@ final class SettingsWindowController {
     }
 }
 
+/// Borderless windows don't become key by default; override so textfields focus
+/// and keyboard shortcuts (Escape → Done, Return → Save) still work.
+private final class BorderlessKeyWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+// MARK: - Root SwiftUI view
+
 private struct SettingsView: View {
     @ObservedObject var state: AppState
     @State var selectedTab: SettingsTab
@@ -64,28 +122,245 @@ private struct SettingsView: View {
     let onRequestReloadBackend: (ASRBackend) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            TabView(selection: $selectedTab) {
-                ModelsTab(state: state, onRequestReloadBackend: onRequestReloadBackend)
-                    .tabItem { Label("Models", systemImage: "waveform") }
-                    .tag(SettingsTab.models)
+        // The glass panel is placed in a ZStack so it sits inside a larger
+        // transparent area where its shadow can bleed.
+        ZStack {
+            Color.clear
+            panel
+        }
+        .frame(
+            width:  Panel.width  + Panel.shadowMargin * 2,
+            height: Panel.height + Panel.shadowMargin * 2
+        )
+    }
 
-                LLMTab(state: state, onClose: onClose)
-                    .tabItem { Label("LLM", systemImage: "sparkles") }
-                    .tag(SettingsTab.llm)
+    @ViewBuilder
+    private var panel: some View {
+        panelContent
+            .frame(width: Panel.width, height: Panel.height)
+            .panelSurface(cornerRadius: Panel.cornerRadius)
+            .shadow(color: .black.opacity(0.22), radius: 22, x: 0, y: 12)
+    }
+
+    private var panelContent: some View {
+        VStack(spacing: 16) {
+            TabPills(selected: $selectedTab)
+                .padding(.top, 18)
+
+            Group {
+                switch selectedTab {
+                case .models:
+                    ModelsTab(state: state, onRequestReloadBackend: onRequestReloadBackend)
+                case .llm:
+                    LLMTab(state: state)
+                case .dictionary:
+                    DictionaryTab(state: state)
+                }
             }
-            .padding(16)
-
-            Divider()
+            .padding(.horizontal, 22)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             HStack {
                 Spacer()
-                Button("Close", action: onClose)
+                DoneButton(action: onClose)
                     .keyboardShortcut(.cancelAction)
             }
-            .padding(12)
+            .padding(.horizontal, 22)
+            .padding(.bottom, 16)
         }
-        .frame(minWidth: 560, minHeight: 400)
+    }
+}
+
+// MARK: - Liquid Glass helpers
+
+private extension View {
+    /// macOS 26+ gets the real Liquid Glass treatment; older macOS falls back
+    /// to ultraThinMaterial + a hairline stroke.
+    @ViewBuilder
+    func panelSurface(cornerRadius: CGFloat) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(in: .rect(cornerRadius: cornerRadius))
+        } else {
+            self.background(
+                .ultraThinMaterial,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+            )
+        }
+    }
+}
+
+/// Done is the single emphasized control — neutral Liquid Glass (no tint),
+/// relying on material density + Return/Escape keyboard shortcut for primacy.
+private struct DoneButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            Button("Done", action: action)
+                .buttonStyle(.glass)
+                .controlSize(.large)
+        } else {
+            Button("Done", action: action)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+        }
+    }
+}
+
+// MARK: - Tab pills
+
+private struct TabPills: View {
+    @Binding var selected: SettingsTab
+    @Namespace private var pillAnimation
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 4) {
+                pillsRow
+                    .padding(4)
+            }
+        } else {
+            pillsRow
+                .padding(4)
+                .background(
+                    Capsule().fill(Color.primary.opacity(0.06))
+                )
+        }
+    }
+
+    private var pillsRow: some View {
+        HStack(spacing: 4) {
+            ForEach(SettingsTab.allCases) { tab in
+                pill(for: tab)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func pill(for tab: SettingsTab) -> some View {
+        let isSelected = selected == tab
+        Button {
+            withAnimation(.smooth(duration: 0.25)) {
+                selected = tab
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: tab.systemImage)
+                    .imageScale(.small)
+                Text(tab.title)
+            }
+            .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
+            .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.7))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .pillSurface(selected: isSelected)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private extension View {
+    /// Neutral differentiation: selected = thicker material (denser glass
+    /// against the outer panel), unselected = interactive regular glass.
+    /// Text weight/opacity carries most of the signal; the capsule is just
+    /// a subtle backing. No accent color — tinted glass inside a
+    /// `GlassEffectContainer` bleeds a halo outside the capsule shape.
+    @ViewBuilder
+    func pillSurface(selected: Bool) -> some View {
+        if selected {
+            self.background(
+                .thickMaterial,
+                in: Capsule()
+            )
+        } else if #available(macOS 26.0, *) {
+            self.glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            self.background(Color.clear, in: Capsule())
+        }
+    }
+}
+
+// MARK: - Reusable card + labeled field
+
+/// A grouped subsection inside the glass panel. Uses a tinted color fill rather
+/// than another glass layer — nested glass doesn't sample cleanly (per the
+/// Liquid Glass HIG: glass cannot sample other glass without
+/// GlassEffectContainer grouping).
+private struct SectionCard<Content: View>: View {
+    var title: String? = nil
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let title {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary.opacity(0.9))
+            }
+            content()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.primary.opacity(0.05),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+        )
+    }
+}
+
+/// Segmented-looking selector for RefineMode that matches the neutral tab
+/// pill aesthetic (no accent tint). Equal-width items; selected uses thick
+/// material, unselected uses interactive regular glass.
+private struct RefineModeSegmented: View {
+    @Binding var selected: RefineMode
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(RefineMode.allCases) { mode in
+                let isSelected = selected == mode
+                Button {
+                    withAnimation(.smooth(duration: 0.22)) {
+                        selected = mode
+                    }
+                } label: {
+                    Text(mode.displayName)
+                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.7))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity)
+                        .pillSurface(selected: isSelected)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+/// Two-row labeled field (label above, control below) — avoids macOS's
+/// `LabeledContent`-inside-`Form` rendering a ghost prompt column next to the
+/// label, which looked like a duplicated URL in v0.3 pre-release.
+private struct LabeledField<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            content()
+        }
     }
 }
 
@@ -96,50 +371,30 @@ private struct ModelsTab: View {
     let onRequestReloadBackend: (ASRBackend) -> Void
 
     @State private var pendingDelete: ASRBackend?
-    @State private var downloadInFlight: Set<ASRBackend> = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Speech Recognition Model")
-                .font(.title3).bold()
-
-            Text("Voice typing runs the selected model locally on Apple Silicon. Switch freely — downloads are cached and kept until you delete them.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(spacing: 0) {
-                ForEach(ASRBackend.allCases) { backend in
-                    ModelRow(
-                        backend: backend,
-                        state: state,
-                        isDownloading: downloadInFlight.contains(backend),
-                        onSelect: {
-                            onRequestReloadBackend(backend)
-                        },
-                        onDelete: {
-                            pendingDelete = backend
+        VStack(spacing: 14) {
+            SectionCard(title: "Speech Recognition Model") {
+                VStack(spacing: 0) {
+                    ForEach(ASRBackend.allCases) { backend in
+                        ModelRow(
+                            backend: backend,
+                            state: state,
+                            onSelect: { onRequestReloadBackend(backend) },
+                            onDelete: { pendingDelete = backend }
+                        )
+                        .id(state.modelInventoryTick)
+                        if backend != ASRBackend.allCases.last {
+                            Divider().opacity(0.25)
                         }
-                    )
-                    .id(state.modelInventoryTick) // force refresh when inventory changes
-                    if backend != ASRBackend.allCases.last {
-                        Divider()
                     }
                 }
+
+                Text("Downloads are cached under `~/Library/Application Support/VoiceTyping/models/` and kept until you delete them.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.secondary.opacity(0.3), lineWidth: 0.5)
-            )
-
-            Spacer()
-
-            Text("Models are stored under `~/Library/Application Support/VoiceTyping/models/`.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .textSelection(.enabled)
         }
         .alert("Delete \(pendingDelete?.displayName ?? "") files?",
                isPresented: .init(
@@ -151,12 +406,10 @@ private struct ModelsTab: View {
                 performDelete(backend)
                 pendingDelete = nil
             }
-            Button("Cancel", role: .cancel) {
-                pendingDelete = nil
-            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: { backend in
             if backend == state.asrBackend {
-                Text("This is the currently active model. Deleting will unload it and you'll need to switch to another model or re-download to use voice typing.")
+                Text("This is the currently active model. Deleting unloads it; you'll need to switch to another model or re-download.")
             } else {
                 Text("\(backend.estimatedSizeLabel) of weights will be removed. You can re-download later.")
             }
@@ -168,7 +421,6 @@ private struct ModelsTab: View {
             try ModelStore.delete(backend)
             Log.app.info("Deleted model files for \(backend.rawValue, privacy: .public)")
             if backend == state.asrBackend {
-                // Reloading will hit .failed or .loading immediately; user can then pick another.
                 onRequestReloadBackend(backend)
             }
             state.modelInventoryTick &+= 1
@@ -181,23 +433,21 @@ private struct ModelsTab: View {
 private struct ModelRow: View {
     let backend: ASRBackend
     @ObservedObject var state: AppState
-    let isDownloading: Bool
     let onSelect: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(backend.displayName).bold()
                     if backend == state.asrBackend {
                         Text("ACTIVE")
                             .font(.caption2).bold()
-                            .padding(.horizontal, 6)
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 7)
                             .padding(.vertical, 2)
-                            .background(Color.accentColor.opacity(0.18))
-                            .foregroundStyle(Color.accentColor)
-                            .clipShape(Capsule())
+                            .background(.thickMaterial, in: Capsule())
                     }
                 }
                 Text(statusLabel)
@@ -208,26 +458,20 @@ private struct ModelRow: View {
             Spacer()
 
             if backend == state.asrBackend, case let .loading(p) = state.recognizerState, p >= 0 {
-                ProgressView(value: p)
-                    .frame(width: 80)
+                ProgressView(value: p).frame(width: 80)
             }
 
-            Button(actionLabel) {
-                onSelect()
-            }
-            .disabled(backend == state.asrBackend && stateIsActive)
+            Button(actionLabel) { onSelect() }
+                .disabled(backend == state.asrBackend && stateIsActive)
 
-            Button(role: .destructive) {
-                onDelete()
-            } label: {
+            Button(role: .destructive) { onDelete() } label: {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
             .disabled(!ModelStore.isDownloaded(backend))
             .help(ModelStore.isDownloaded(backend) ? "Delete files" : "Not downloaded")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
     }
 
     private var stateIsActive: Bool {
@@ -238,36 +482,27 @@ private struct ModelRow: View {
     private var statusLabel: String {
         if backend == state.asrBackend {
             switch state.recognizerState {
-            case .ready:
-                return "Active · \(sizeOrEstimate())"
+            case .ready:           return "Active · \(sizeOrEstimate())"
             case .loading(let p):
                 if p < 0 { return "Loading…" }
                 return String(format: "Downloading %d%%", Int(p * 100))
-            case .failed(let err):
-                return "Failed — \(err.localizedDescription)"
-            case .unloaded:
-                return "Preparing…"
+            case .failed(let err): return "Failed — \(err.localizedDescription)"
+            case .unloaded:        return "Preparing…"
             }
         }
-        if ModelStore.isDownloaded(backend) {
-            return "Downloaded · \(sizeOrEstimate())"
-        }
-        return "Not downloaded · \(backend.estimatedSizeLabel) to download"
+        return ModelStore.isDownloaded(backend)
+            ? "Downloaded · \(sizeOrEstimate())"
+            : "Not downloaded · \(backend.estimatedSizeLabel) to download"
     }
 
     private var actionLabel: String {
-        if backend == state.asrBackend {
-            return "Active"
-        }
+        if backend == state.asrBackend { return "Active" }
         return ModelStore.isDownloaded(backend) ? "Switch" : "Download & Switch"
     }
 
     private func sizeOrEstimate() -> String {
         let onDisk = ModelStore.sizeOnDisk(backend)
-        if onDisk > 1_000_000 {
-            return onDisk.humanReadableBytes
-        }
-        return backend.estimatedSizeLabel
+        return onDisk > 1_000_000 ? onDisk.humanReadableBytes : backend.estimatedSizeLabel
     }
 }
 
@@ -275,7 +510,6 @@ private struct ModelRow: View {
 
 private struct LLMTab: View {
     @ObservedObject var state: AppState
-    let onClose: () -> Void
 
     @State private var baseURL: String = ""
     @State private var apiKey: String = ""
@@ -284,28 +518,46 @@ private struct LLMTab: View {
     @State private var testStatus: TestStatus = .idle
 
     enum TestStatus: Equatable {
-        case idle
-        case running
+        case idle, running
         case ok(String)
         case failed(String)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("LLM Refinement")
-                .font(.title3).bold()
+        VStack(spacing: 14) {
 
-            Text("Post-process transcriptions with an OpenAI-compatible chat API. Used only to fix obvious speech-recognition errors; your text is not rewritten.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            SectionCard(title: "Refinement") {
+                // Custom segmented selector — the system `.segmented` picker
+                // renders the selected option in accent blue which conflicts
+                // with the "no tint" direction. Reuses the same neutral
+                // material-vs-glass treatment as the top tab pills.
+                RefineModeSegmented(selected: $state.refineMode)
 
-            Form {
-                LabeledContent("API Base URL") {
+                Text(state.refineMode.shortDescription)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle(isOn: $state.rawFirstEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Paste raw first, refine in background")
+                            .font(.system(size: 13))
+                        Text("Lower perceived latency. Avoid in chat apps that auto-send on Enter.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(state.refineMode == .off)
+                .padding(.top, 2)
+            }
+
+            SectionCard(title: "API") {
+                LabeledField(title: "Base URL") {
                     TextField("https://api.openai.com/v1", text: $baseURL)
                         .textFieldStyle(.roundedBorder)
                 }
-                LabeledContent("API Key") {
+
+                LabeledField(title: "API Key") {
                     HStack(spacing: 6) {
                         Group {
                             if showAPIKey {
@@ -334,20 +586,20 @@ private struct LLMTab: View {
                         .disabled(apiKey.isEmpty)
                     }
                 }
-                LabeledContent("Model") {
+
+                LabeledField(title: "Model") {
                     TextField("gpt-4o-mini", text: $model)
                         .textFieldStyle(.roundedBorder)
                 }
-            }
 
-            HStack {
-                testStatusView
-                Spacer()
-                Button("Test") { runTest() }
-                    .disabled(!canTest || testStatus == .running)
-                Button("Save") { save() }
-                    .keyboardShortcut(.return)
-                    .buttonStyle(.borderedProminent)
+                HStack {
+                    testStatusView
+                    Spacer()
+                    Button("Test") { runTest() }
+                        .disabled(!canTest || testStatus == .running)
+                    Button("Save") { save() }
+                        .keyboardShortcut(.return)
+                }
             }
         }
         .onAppear { loadCurrent() }
@@ -402,7 +654,6 @@ private struct LLMTab: View {
         cfg.baseURL = baseURL
         cfg.apiKey  = apiKey
         cfg.model   = model
-        cfg.enabled = true
         let refiner = LLMRefiner()
         Task {
             let result = await refiner.test(config: cfg)
@@ -413,6 +664,295 @@ private struct LLMTab: View {
                 case .failed(let msg):
                     testStatus = .failed(msg)
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Dictionary tab
+
+private struct DictionaryTab: View {
+    @ObservedObject var state: AppState
+
+    @State private var showingAddDialog = false
+    @State private var draftTerm: String = ""
+    @State private var draftHints: String = ""
+    @State private var draftNote: String = ""
+    @State private var editingID: UUID?
+    @State private var pendingDeleteIDs: Set<UUID> = []
+    @State private var selection: Set<UUID> = []
+
+    private var selectedEntry: DictionaryEntry? {
+        guard selection.count == 1, let id = selection.first else { return nil }
+        return state.dictionary.entries.first { $0.id == id }
+    }
+
+    private var selectedEntries: [DictionaryEntry] {
+        state.dictionary.entries.filter { selection.contains($0.id) }
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            SectionCard(title: "Custom Vocabulary") {
+                Text("Terms injected into ASR and the LLM refiner so your jargon, names, and product terms survive transcription. What gets injected each call depends on recency and the backend's token budget.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                injectionStatus
+
+                Table(state.dictionary.entries, selection: $selection) {
+                    TableColumn("Term") { entry in
+                        Text(entry.term)
+                            .font(.body)
+                    }
+                    .width(min: 120, ideal: 160)
+
+                    TableColumn("Pronunciation hints") { entry in
+                        Text(entry.pronunciationHints.joined(separator: ", "))
+                            .foregroundStyle(.secondary)
+                    }
+                    .width(min: 160, ideal: 220)
+
+                    TableColumn("Note") { entry in
+                        Text(entry.note ?? "")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .width(min: 80, ideal: 160)
+                }
+                .id(state.dictionaryTick)
+                .frame(minHeight: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contextMenu(forSelectionType: UUID.self) { ids in
+                    if ids.count == 1, let id = ids.first,
+                       let entry = state.dictionary.entries.first(where: { $0.id == id }) {
+                        Button("Edit…") { beginEdit(entry) }
+                    }
+                    if !ids.isEmpty {
+                        Button("Delete", role: .destructive) {
+                            pendingDeleteIDs = ids
+                        }
+                    }
+                } primaryAction: { ids in
+                    if let id = ids.first,
+                       let entry = state.dictionary.entries.first(where: { $0.id == id }) {
+                        beginEdit(entry)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        clearDraft()
+                        showingAddDialog = true
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                    }
+
+                    Button {
+                        if let entry = selectedEntry { beginEdit(entry) }
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .disabled(selection.count != 1)
+
+                    Button(role: .destructive) {
+                        pendingDeleteIDs = selection
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .disabled(selection.isEmpty)
+
+                    Divider().frame(height: 16)
+
+                    Button { importFromFile() } label: {
+                        Label("Import", systemImage: "square.and.arrow.down")
+                    }
+
+                    Button { exportToFile() } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(state.dictionary.entries.isEmpty)
+
+                    Spacer()
+
+                    Text(String(format: "%d / %d entries", state.dictionary.entries.count, CustomDictionary.softEntryCap))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .sheet(isPresented: $showingAddDialog) {
+            editorSheet
+        }
+        .alert(deleteAlertTitle,
+               isPresented: .init(
+                   get: { !pendingDeleteIDs.isEmpty },
+                   set: { if !$0 { pendingDeleteIDs = [] } }
+               ),
+               presenting: pendingDeleteIDs.isEmpty ? nil : pendingDeleteIDs) { ids in
+            Button("Delete", role: .destructive) {
+                for id in ids { state.removeDictionaryEntry(id: id) }
+                selection.subtract(ids)
+                pendingDeleteIDs = []
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteIDs = [] }
+        } message: { _ in
+            Text("This only removes the entry locally. You can re-add it later.")
+        }
+    }
+
+    private var deleteAlertTitle: String {
+        pendingDeleteIDs.count > 1
+            ? "Delete \(pendingDeleteIDs.count) entries?"
+            : "Delete this entry?"
+    }
+
+    // MARK: Injection status
+
+    private var injectionStatus: some View {
+        let entries = state.dictionary.entries
+        let qwen    = GlossaryBuilder.qwenReport(from: entries)
+        let whisper = GlossaryBuilder.whisperReport(from: entries)
+        let llm     = GlossaryBuilder.llmReport(from: entries)
+
+        return HStack(spacing: 10) {
+            statusPill(title: "Qwen", report: qwen)
+            statusPill(title: "Whisper", report: whisper)
+            statusPill(title: "LLM", report: llm)
+            Spacer()
+        }
+    }
+
+    private func statusPill(title: String, report: GlossaryBuilder.InjectionReport) -> some View {
+        let pct = report.budget > 0 ? Double(report.tokens) / Double(report.budget) : 0
+        let tight = pct > 0.85
+        return HStack(spacing: 6) {
+            Text(title)
+                .font(.caption2).bold()
+                .foregroundStyle(.secondary)
+            Text("\(report.injected)/\(report.total)")
+                .font(.caption)
+            Text("·")
+                .foregroundStyle(.tertiary)
+            Text("\(report.tokens)/\(report.budget)t")
+                .font(.caption)
+                .foregroundStyle(tight ? .orange : .secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.primary.opacity(0.05), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.06), lineWidth: 0.5))
+    }
+
+    // MARK: Editor sheet
+
+    private var editorSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(editingID == nil ? "Add Vocabulary Entry" : "Edit Vocabulary Entry")
+                .font(.headline)
+
+            LabeledField(title: "Term") {
+                TextField("e.g. Python, Kubernetes, Qwen3-ASR", text: $draftTerm)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            LabeledField(title: "Pronunciation hints (comma-separated)") {
+                TextField("配森, 派森", text: $draftHints)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            LabeledField(title: "Note (optional)") {
+                TextField("your own reminder, not shown to the model", text: $draftNote)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Text("The term is the canonical spelling. Hints are how you pronounce it — they bias ASR and help the LLM map variants back to the term.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { showingAddDialog = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(editingID == nil ? "Add" : "Save") { commitEdit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(draftTerm.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+
+    private func clearDraft() {
+        draftTerm = ""
+        draftHints = ""
+        draftNote = ""
+        editingID = nil
+    }
+
+    private func beginEdit(_ entry: DictionaryEntry) {
+        draftTerm = entry.term
+        draftHints = entry.pronunciationHints.joined(separator: ", ")
+        draftNote = entry.note ?? ""
+        editingID = entry.id
+        showingAddDialog = true
+    }
+
+    private func commitEdit() {
+        let term = draftTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+        let hints = draftHints
+            .split(whereSeparator: { $0 == "," || $0 == "，" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let note = draftNote.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Preserve createdAt / lastMatchedAt when editing so LRU ranking survives.
+        let existing = editingID.flatMap { id in
+            state.dictionary.entries.first { $0.id == id }
+        }
+        let entry = DictionaryEntry(
+            id: editingID ?? UUID(),
+            term: term,
+            pronunciationHints: hints,
+            note: note.isEmpty ? nil : note,
+            createdAt: existing?.createdAt ?? Date(),
+            lastMatchedAt: existing?.lastMatchedAt
+        )
+        _ = state.upsertDictionaryEntry(entry)
+        showingAddDialog = false
+    }
+
+    // MARK: Import / Export
+
+    private func importFromFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a dictionary JSON file to import."
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try Data(contentsOf: url)
+                try state.dictionary.importJSON(data)
+                state.dictionaryTick &+= 1
+            } catch {
+                Log.app.warning("Dictionary import failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func exportToFile() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "voicetyping-dictionary.json"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try state.dictionary.exportJSON()
+                try data.write(to: url, options: .atomic)
+            } catch {
+                Log.app.warning("Dictionary export failed: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

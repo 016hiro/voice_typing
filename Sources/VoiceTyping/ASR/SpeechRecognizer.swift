@@ -14,6 +14,19 @@ public protocol SpeechRecognizer: AnyObject, Sendable {
     var state: RecognizerState { get }
 
     func prepare() async throws
-    func transcribe(_ buffer: AudioBuffer, language: Language) async throws -> String
+
+    /// Transcribe the given buffer. `context` is an optional prompt-bias string
+    /// (domain glossary / canonical term list); backends that don't support it
+    /// should ignore it. Callers pass `nil` when the user's dictionary is empty.
+    func transcribe(_ buffer: AudioBuffer,
+                    language: Language,
+                    context: String?) async throws -> String
     func cancel()
+}
+
+public extension SpeechRecognizer {
+    /// Convenience overload for call sites that don't need prompt biasing.
+    func transcribe(_ buffer: AudioBuffer, language: Language) async throws -> String {
+        try await transcribe(buffer, language: language, context: nil)
+    }
 }

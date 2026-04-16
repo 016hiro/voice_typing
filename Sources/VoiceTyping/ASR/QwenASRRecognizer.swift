@@ -92,10 +92,27 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
         }
     }
 
-    public func transcribe(_ buffer: AudioBuffer, language: Language) async throws -> String {
+    public func transcribe(_ buffer: AudioBuffer,
+                            language: Language,
+                            context: String?) async throws -> String {
         let samples = buffer.samples
         let sr = Int(buffer.sampleRate)
         let lang = language.qwenName
+        // `context` lands in Qwen3-ASR's `<|im_start|>system\n{context}<|im_end|>`
+        // slot, so the model treats it as task instructions for this utterance.
+        let ctx = context?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+
+        // Guard against buffers too short for Whisper's mel-spectrogram
+        // preprocessing. `WhisperFeatureExtractor.extractFeatures` assumes
+        // `audio.count >= 1` and indexes `audio[audio.count - 1]` unconditionally
+        // in its reflect-padding loop — an empty or near-empty buffer crashes
+        // the process (Swift runtime: Index out of range).
+        // `nFFT` is 400 samples (25ms @ 16kHz); require at least one full window.
+        let minSamples = 400
+        guard samples.count >= minSamples else {
+            Log.asr.warning("Qwen transcribe skipped: \(samples.count, privacy: .public) samples < \(minSamples, privacy: .public) required")
+            return ""
+        }
 
         // `transcribe` is synchronous/blocking. Run on a detached task so we don't hog
         // the caller. Model is non-Sendable but we access it through `self`
@@ -115,7 +132,7 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
                     sampleRate: sr,
                     language: lang,
                     maxTokens: 448,
-                    context: nil
+                    context: ctx
                 )
             }
         }.value
@@ -145,4 +162,8 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
         stateLock.unlock()
         stateContinuation?.yield(newState)
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

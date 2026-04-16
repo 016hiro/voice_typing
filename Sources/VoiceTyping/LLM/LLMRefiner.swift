@@ -8,32 +8,32 @@ final class LLMRefiner: Sendable {
         case failed(String)
     }
 
-    static let systemPrompt: String = """
-    You are a conservative speech-recognition post-processor. Your ONLY job is to fix obvious speech-to-text errors: misheard technical terms (e.g. "配森" → "Python", "杰森" → "JSON"), homophones whose intent is unambiguous from context, and missing punctuation at clause boundaries.
-
-    You MUST NOT:
-    - rewrite, paraphrase, translate, or summarize the text
-    - change the user's tone, style, word choice, or sentence order
-    - add content that wasn't spoken
-    - remove content unless it is a clearly duplicated word from stuttering
-    - translate between languages
-
-    If the input already reads correctly, return it UNCHANGED. Output ONLY the corrected text — no preface, no explanation, no quotes, no markdown.
-    """
-
-    /// Refines `text`. On any failure (network, timeout, auth, decode), returns the original input.
-    func refine(_ text: String, language: Language, config: LLMConfig) async -> String {
+    /// Refines `text` using the given `mode`. Optional `glossary` is a pre-formatted
+    /// Markdown block from `GlossaryBuilder.buildLLMGlossary` that gets appended
+    /// after the mode's system prompt.
+    ///
+    /// On any failure (network, timeout, auth, decode), returns the original input
+    /// unchanged — matching v0.1+ fail-open behavior.
+    func refine(_ text: String,
+                language: Language,
+                mode: RefineMode,
+                glossary: String? = nil,
+                config: LLMConfig) async -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, config.isUsable else { return text }
+        guard !trimmed.isEmpty else { return text }
+        guard let systemPrompt = mode.systemPrompt else { return text }    // .off
+        guard config.hasCredentials else { return text }
+
+        let finalSystem = Self.compose(systemPrompt: systemPrompt, glossary: glossary)
 
         do {
             let reply = try await chat(
-                system: Self.systemPrompt,
+                system: finalSystem,
                 user: trimmed,
                 config: config
             )
             let cleaned = Self.stripQuotesAndCode(reply).trimmingCharacters(in: .whitespacesAndNewlines)
-            Log.llm.info("Refined \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars")
+            Log.llm.info("Refined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars")
             return cleaned.isEmpty ? text : cleaned
         } catch {
             Log.llm.warning("Refine failed: \(String(describing: error), privacy: .public)")
@@ -41,9 +41,14 @@ final class LLMRefiner: Sendable {
         }
     }
 
+    private static func compose(systemPrompt: String, glossary: String?) -> String {
+        guard let glossary, !glossary.isEmpty else { return systemPrompt }
+        return systemPrompt + "\n\n" + glossary
+    }
+
     /// Sends a tiny test message to confirm credentials work.
     func test(config: LLMConfig) async -> TestResult {
-        guard config.isUsable else { return .failed("Configuration incomplete") }
+        guard config.hasCredentials else { return .failed("Configuration incomplete") }
         do {
             let reply = try await chat(
                 system: "You are a test responder. Reply with 'ok'.",

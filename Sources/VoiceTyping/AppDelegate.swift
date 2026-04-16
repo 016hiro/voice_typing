@@ -18,11 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.onLanguageSelected = { [weak self] lang in
             self?.state.language = lang
         }
-        c.onLLMEnabledChanged = { [weak self] enabled in
-            guard let self else { return }
-            var cfg = self.state.llmConfig
-            cfg.enabled = enabled
-            self.state.llmConfig = cfg
+        c.onRefineModeSelected = { [weak self] mode in
+            self?.state.refineMode = mode
         }
         c.onASRBackendSelected = { [weak self] backend in
             self?.switchBackend(to: backend)
@@ -230,16 +227,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let buffer = audio.stop()
         state.status = .transcribing
 
+        // Guard against ultra-short taps (e.g. accidental Fn press). The Qwen
+        // mel extractor and Whisper both assume at least one FFT window
+        // (~400 samples @ 16 kHz ≈ 25 ms); feeding less crashes the process.
+        if buffer.samples.count < 400 {
+            Log.app.info("stopRecording: buffer too short (\(buffer.samples.count, privacy: .public) samples), skipping ASR")
+            flashInfo(message(for: .noSpeech), autoHide: true)
+            return
+        }
+
+        // Snapshot everything that affects this pipeline run so later mutations
+        // (user edits the dictionary, switches refine mode, etc.) don't corrupt
+        // the in-flight transcription.
+        let backend = activeBackend
+        let language = state.language
+        let dictEntries = state.dictionary.entries
+        let mode = state.refineMode
+        let llmConfig = state.llmConfig
+        let rawFirst = state.rawFirstEnabled
+        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let asrContext = GlossaryBuilder.buildForASR(backend, entries: dictEntries, language: language)
+        if let ctx = asrContext {
+            Log.app.info("ASR bias: backend=\(backend.rawValue, privacy: .public) entries=\(dictEntries.count, privacy: .public) context=\(ctx, privacy: .public)")
+        } else {
+            Log.app.info("ASR bias: none (entries=\(dictEntries.count, privacy: .public), backend=\(backend.rawValue, privacy: .public))")
+        }
+
+        let tracker = LatencyTracker()
+
         pipelineTask?.cancel()
         pipelineTask = Task { [weak self] in
             guard let self else { return }
 
+            // --- ASR ---
+            tracker.mark(.asrStart)
             var transcript = ""
             do {
-                transcript = try await self.recognizer.transcribe(buffer, language: self.state.language)
+                transcript = try await self.recognizer.transcribe(
+                    buffer,
+                    language: language,
+                    context: asrContext
+                )
             } catch {
                 Log.app.error("Transcribe failed: \(error.localizedDescription, privacy: .public)")
             }
+            tracker.mark(.asrEnd)
 
             let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
@@ -249,25 +281,171 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            // LLM refinement
-            var finalText = trimmed
-            if self.state.llmConfig.isUsable {
-                await MainActor.run {
-                    self.state.capsuleText = trimmed
-                    self.state.status = .refining
-                }
-                let refined = await self.refiner.refine(trimmed, language: self.state.language, config: self.state.llmConfig)
-                finalText = refined
-            }
+            // Record ASR-side dictionary hits.
+            let asrHits = GlossaryBuilder.matchedEntryIDs(in: trimmed, entries: dictEntries)
+            await MainActor.run { self.state.noteDictionaryMatches(asrHits) }
 
-            await self.injector.inject(finalText)
+            // Decide whether refinement will run at all.
+            let willRefine = (mode.systemPrompt != nil) && llmConfig.hasCredentials
 
-            await MainActor.run {
-                self.capsuleWindow.hide()
-                self.state.capsuleText = ""
-                self.state.status = .idle
+            if willRefine && rawFirst {
+                // Raw-first: inject raw immediately, refine in background, replace if safe.
+                await self.injectRawFirstThenRefine(
+                    raw: trimmed,
+                    mode: mode,
+                    language: language,
+                    dictEntries: dictEntries,
+                    llmConfig: llmConfig,
+                    backend: backend,
+                    bundleID: frontmostBundleID,
+                    tracker: tracker
+                )
+            } else {
+                await self.injectWaitingForRefine(
+                    raw: trimmed,
+                    willRefine: willRefine,
+                    mode: mode,
+                    language: language,
+                    dictEntries: dictEntries,
+                    llmConfig: llmConfig,
+                    backend: backend,
+                    tracker: tracker
+                )
             }
         }
+    }
+
+    /// Classic v0.2-shaped pipeline: transcribe → (optional refine) → paste once.
+    private func injectWaitingForRefine(
+        raw: String,
+        willRefine: Bool,
+        mode: RefineMode,
+        language: Language,
+        dictEntries: [DictionaryEntry],
+        llmConfig: LLMConfig,
+        backend: ASRBackend,
+        tracker: LatencyTracker
+    ) async {
+        var finalText = raw
+        if willRefine {
+            await MainActor.run {
+                self.state.capsuleText = raw
+                self.state.status = .refining
+            }
+            let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
+            tracker.mark(.llmStart)
+            let refined = await self.refiner.refine(
+                raw,
+                language: language,
+                mode: mode,
+                glossary: glossary,
+                config: llmConfig
+            )
+            tracker.mark(.llmEnd)
+            finalText = refined
+
+            let llmHits = GlossaryBuilder.matchedEntryIDs(in: refined, entries: dictEntries)
+            await MainActor.run { self.state.noteDictionaryMatches(llmHits) }
+        }
+
+        tracker.mark(.injectStart)
+        await self.injector.inject(finalText)
+        tracker.mark(.injectEnd)
+
+        await MainActor.run {
+            self.capsuleWindow.hide()
+            self.state.capsuleText = ""
+            self.state.status = .idle
+        }
+
+        tracker.log(
+            backend: backend.rawValue,
+            mode: mode.rawValue,
+            dictEntries: dictEntries.count,
+            rawFirst: false
+        )
+    }
+
+    /// Raw-first: paste ASR output now, start refiner in parallel, replace later
+    /// via Cmd+Z + re-paste IF the user hasn't moved on.
+    private func injectRawFirstThenRefine(
+        raw: String,
+        mode: RefineMode,
+        language: Language,
+        dictEntries: [DictionaryEntry],
+        llmConfig: LLMConfig,
+        backend: ASRBackend,
+        bundleID: String?,
+        tracker: LatencyTracker
+    ) async {
+        // Step 1: paste raw immediately.
+        tracker.mark(.injectStart)
+        await self.injector.inject(raw)
+        tracker.mark(.injectEnd)
+
+        await MainActor.run {
+            self.capsuleWindow.hide()
+            self.state.capsuleText = ""
+            self.state.status = .idle
+        }
+
+        // Step 2: refine in the background.
+        let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
+        tracker.mark(.llmStart)
+        let refined = await self.refiner.refine(
+            raw,
+            language: language,
+            mode: mode,
+            glossary: glossary,
+            config: llmConfig
+        )
+        tracker.mark(.llmEnd)
+
+        let trimmedRefined = refined.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Step 3: if refiner changed nothing or still in the same app, try to replace.
+        let unchanged = trimmedRefined == raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentBundleID = await MainActor.run { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
+        let focusSafe = (currentBundleID != nil) && (currentBundleID == bundleID)
+
+        let llmHits = GlossaryBuilder.matchedEntryIDs(in: trimmedRefined, entries: dictEntries)
+        await MainActor.run { self.state.noteDictionaryMatches(llmHits) }
+
+        if !unchanged && focusSafe {
+            // Undo the raw paste, then paste refined. Uses Cmd+Z which all cocoa
+            // text fields honor; on failure we simply leave the raw output in place.
+            await self.replaceLastInjection(with: trimmedRefined)
+        } else if !focusSafe {
+            Log.app.info("Raw-first refine skipped rewrite: focus moved from \(bundleID ?? "nil", privacy: .public) to \(currentBundleID ?? "nil", privacy: .public)")
+        }
+
+        tracker.log(
+            backend: backend.rawValue,
+            mode: mode.rawValue,
+            dictEntries: dictEntries.count,
+            rawFirst: true
+        )
+    }
+
+    /// Simulates Cmd+Z (to remove the previous paste) then pastes `refined`.
+    private func replaceLastInjection(with refined: String) async {
+        await MainActor.run {
+            // Send Cmd+Z through the same HID tap path as Cmd+V.
+            let zKey: CGKeyCode = 0x06 // kVK_ANSI_Z
+            let source = CGEventSource(stateID: .hidSystemState)
+            if let down = CGEvent(keyboardEventSource: source, virtualKey: zKey, keyDown: true) {
+                down.flags = .maskCommand
+                down.post(tap: .cghidEventTap)
+            }
+            usleep(20_000)
+            if let up = CGEvent(keyboardEventSource: source, virtualKey: zKey, keyDown: false) {
+                up.flags = .maskCommand
+                up.post(tap: .cghidEventTap)
+            }
+        }
+        // Small grace for the host app to process the undo.
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        await self.injector.inject(refined)
     }
 
     // MARK: - Flash messaging via capsule

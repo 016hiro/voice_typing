@@ -13,7 +13,7 @@ final class StatusItemController: NSObject {
 
     // Delegate-style callbacks wired by AppDelegate
     var onLanguageSelected: ((Language) -> Void)?
-    var onLLMEnabledChanged: ((Bool) -> Void)?
+    var onRefineModeSelected: ((RefineMode) -> Void)?
     var onOpenSettings: (() -> Void)?
     var onASRBackendSelected: ((ASRBackend) -> Void)?
     var onGrantAccessibility: (() -> Void)?
@@ -47,6 +47,10 @@ final class StatusItemController: NSObject {
         }.store(in: &cancellables)
 
         state.$llmConfig.sink { [weak self] _ in
+            self?.rebuildMenu()
+        }.store(in: &cancellables)
+
+        state.$refineMode.sink { [weak self] _ in
             self?.rebuildMenu()
         }.store(in: &cancellables)
 
@@ -172,10 +176,22 @@ final class StatusItemController: NSObject {
         modelItem.submenu = buildModelMenu()
         menu.addItem(modelItem)
 
-        // LLM Refinement submenu
-        let llmItem = NSMenuItem(title: "LLM Refinement", action: nil, keyEquivalent: "")
+        // Refinement submenu (4-mode picker only — Settings moved out to top level)
+        let llmItem = NSMenuItem(
+            title: "Refinement · \(state.refineMode.displayName)",
+            action: nil,
+            keyEquivalent: ""
+        )
         llmItem.submenu = buildLLMMenu()
         menu.addItem(llmItem)
+
+        menu.addItem(.separator())
+
+        let settings = NSMenuItem(title: "Settings…",
+                                  action: #selector(openSettingsDefault),
+                                  keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
 
         menu.addItem(.separator())
 
@@ -255,21 +271,16 @@ final class StatusItemController: NSObject {
 
     private func buildLLMMenu() -> NSMenu {
         let m = NSMenu()
-        let enableItem = NSMenuItem(title: state.llmConfig.enabled ? "✓ Enabled" : "Enabled",
-                                    action: #selector(toggleLLM),
-                                    keyEquivalent: "")
-        enableItem.state = state.llmConfig.enabled ? .on : .off
-        enableItem.target = self
-        m.addItem(enableItem)
-
-        m.addItem(.separator())
-
-        let settingsItem = NSMenuItem(title: "Settings…",
-                                      action: #selector(openSettingsLLM),
-                                      keyEquivalent: ",")
-        settingsItem.target = self
-        m.addItem(settingsItem)
-
+        for mode in RefineMode.allCases {
+            let item = NSMenuItem(title: mode.displayName,
+                                  action: #selector(selectRefineMode(_:)),
+                                  keyEquivalent: "")
+            item.representedObject = mode
+            item.target = self
+            item.state = (mode == state.refineMode) ? .on : .off
+            item.toolTip = mode.shortDescription
+            m.addItem(item)
+        }
         return m
     }
 
@@ -289,12 +300,13 @@ final class StatusItemController: NSObject {
         openSettings(tab: .models)
     }
 
-    @objc private func toggleLLM() {
-        onLLMEnabledChanged?(!state.llmConfig.enabled)
+    @objc private func selectRefineMode(_ sender: NSMenuItem) {
+        guard let mode = sender.representedObject as? RefineMode else { return }
+        onRefineModeSelected?(mode)
     }
 
-    @objc private func openSettingsLLM() {
-        openSettings(tab: .llm)
+    @objc private func openSettingsDefault() {
+        openSettings(tab: .models)
     }
 
     func openSettings(tab: SettingsTab) {

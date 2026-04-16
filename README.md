@@ -7,7 +7,9 @@ A macOS menu-bar voice input app. Hold **Fn** to dictate, release to paste the t
   - **Qwen3-ASR 1.7B** (MLX, ~1.4 GB) — SOTA open-source ASR, beats Whisper-large-v3 on multilingual benchmarks. Default when MLX is available.
   - **Qwen3-ASR 0.6B** (MLX, ~400 MB) — faster, lighter; intended for future streaming mode
   - **Whisper large-v3** (WhisperKit, ~3 GB) — fallback when the Metal Toolchain (required by MLX) isn't installed
-- Optional LLM post-processing layer fixes misrecognitions conservatively (e.g. 配森→Python, 杰森→JSON). OpenAI-compatible API.
+- Four-level LLM refinement (OpenAI-compatible API): `off` / `conservative` (default, fix misrecognitions only) / `light` (also removes fillers & stutters) / `aggressive` (also formats lists & lightly polishes wording). Fails soft — never loses text.
+- **Custom dictionary** with dual-layer injection: term-only entries anchor ASR spelling (Qwen context + Whisper prompt), `term + pronunciations` entries also produce rewrite rules in the LLM glossary. LRU-ranked, token-budgeted, persisted to JSON.
+- Optional **Raw-first inject** mode: pastes raw ASR instantly, then replaces with refined text once the LLM returns (only if the user hasn't moved on). Trades a visible flicker for lower perceived latency.
 - Frameless capsule HUD with real-time RMS-driven 5-bar waveform.
 - Pasteboard + Cmd+V injection with CJK IME detection and temporary switch to ASCII.
 - Menu-bar only (LSUIElement, no Dock icon).

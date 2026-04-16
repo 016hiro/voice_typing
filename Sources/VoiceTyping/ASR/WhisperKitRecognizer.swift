@@ -64,10 +64,34 @@ public final class WhisperKitRecognizer: SpeechRecognizer, @unchecked Sendable {
         }
     }
 
-    public func transcribe(_ buffer: AudioBuffer, language: Language) async throws -> String {
+    public func transcribe(_ buffer: AudioBuffer,
+                            language: Language,
+                            context: String?) async throws -> String {
         guard let pipe = pipeline else {
             throw NSError(domain: "VoiceTyping.ASR", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Recognizer not prepared"])
+        }
+
+        // WhisperKit's audio pipeline also assumes a non-trivial sample count.
+        // Match the Qwen guard to avoid any chance of an empty-buffer crash
+        // inside the mel extractor.
+        let minSamples = 400
+        guard buffer.samples.count >= minSamples else {
+            Log.asr.warning("Whisper transcribe skipped: \(buffer.samples.count, privacy: .public) samples < \(minSamples, privacy: .public) required")
+            return ""
+        }
+
+        // Tokenize the dictionary bias string via WhisperKit's own tokenizer.
+        // WhisperKit will clip this at 224 tokens internally (sampleLength) —
+        // GlossaryBuilder already keeps us well under that.
+        let biasPrompt = context?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let promptTokens: [Int]?
+        if let biasPrompt, !biasPrompt.isEmpty, let tok = pipe.tokenizer {
+            let ids = tok.encode(text: " " + biasPrompt)
+                .filter { $0 < tok.specialTokens.specialTokenBegin }
+            promptTokens = ids.isEmpty ? nil : ids
+        } else {
+            promptTokens = nil
         }
 
         let options = DecodingOptions(
@@ -80,6 +104,7 @@ public final class WhisperKitRecognizer: SpeechRecognizer, @unchecked Sendable {
             usePrefillPrompt: true,
             skipSpecialTokens: true,
             withoutTimestamps: true,
+            promptTokens: promptTokens,
             suppressBlank: true
         )
 

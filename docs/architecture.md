@@ -1,10 +1,10 @@
 # VoiceTyping 架构
 
-> 截至 v0.2.0。本文档跟随代码同步更新，发现不一致以代码为准。
+> 截至 v0.3.0。本文档跟随代码同步更新，发现不一致以代码为准。
 
 ## 1. 概览
 
-VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松开后将转录文本通过剪贴板 + Cmd+V 注入到当前焦点输入框。默认中文（zh-CN），支持五种语言切换；可选 LLM 后处理纠正中英混杂的识别错误。
+VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松开后将转录文本通过剪贴板 + Cmd+V 注入到当前焦点输入框。默认中文（zh-CN），支持五种语言切换；可选 LLM 后处理做四档强度可选的清洗与重写；自定义词典双层注入（ASR bias + LLM glossary）提升术语与专有名词准确率。
 
 **运行模式**：LSUIElement（仅菜单栏图标，无 Dock 图标）。
 **目标平台**：macOS 15+，Apple Silicon (arm64)（MLX Swift 要求）。
@@ -20,10 +20,11 @@ VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松
 | 语音识别 | `SpeechRecognizer` 协议 + 2 个实现 | 详见 §5.1；运行时切换 |
 | ASR backend A | WhisperKit 0.9+ (CoreML) | `openai_whisper-large-v3`，~3 GB |
 | ASR backend B | `soniqo/speech-swift` 0.0.9+ (MLX) | `Qwen3-ASR 0.6B/1.7B`，~400 MB / ~1.4 GB |
-| LLM | URLSession + OpenAI 兼容 chat completions | 可选 |
+| LLM | URLSession + OpenAI 兼容 chat completions | 四档强度可选（off/conservative/light/aggressive） |
+| 字典 | `CustomDictionary` + JSON 文件 | LRU + debounced flush；双层注入（ASR context + LLM glossary） |
 | 输入法切换 | Carbon TextInputServices (TIS) | CJK IME 检测与临时切换 |
-| 文本注入 | NSPasteboard + 合成 Cmd+V (CGEvent) | |
-| 持久化 | UserDefaults | 语言偏好、LLM 配置、当前后端 |
+| 文本注入 | NSPasteboard + 合成 Cmd+V (CGEvent) | 可选 Raw-first：先注 raw，refiner 后台替换 |
+| 持久化 | UserDefaults + JSON | UserDefaults：语言/后端/refineMode/rawFirst/LLMConfig；JSON：字典 |
 
 ## 3. 模块地图
 
@@ -64,6 +65,13 @@ flowchart TB
     subgraph LLM["LLM 层"]
         LLMR["LLMRefiner"]
         LLMC["LLMConfig"]
+        Mode["RefineMode enum<br/>4 档 + 3 份 system prompt"]
+        Dict["CustomDictionary<br/>@MainActor + JSON 持久化"]
+        Entry["DictionaryEntry"]
+        Gloss["GlossaryBuilder<br/>LRU + budget 贪心"]
+        Dict --> Entry
+        LLMR --> Mode
+        LLMR --> Gloss
     end
 
     subgraph Inject["注入层"]
@@ -81,10 +89,11 @@ flowchart TB
     end
 
     subgraph Support["Support"]
-        Lang["Language"]
+        Lang["Language<br/>+ isChinese 分支点"]
         Perm["Permissions"]
         Store["ModelStore<br/>每后端分目录 + 迁移"]
         Log["Logging (os.Logger)"]
+        Latency["LatencyTracker<br/>3 段 ms → os_log"]
     end
 
     main --> AppDel
@@ -108,6 +117,9 @@ flowchart TB
     Qwen --> Store
     LLMR --> LLMC
     AudioCap --> Lang
+    AppState --> Dict
+    AppDel --> Gloss
+    AppDel --> Latency
 ```
 
 ### 3.2 文件职责
@@ -119,10 +131,11 @@ main.swift                     入口；MainActor.assumeIsolated 启动 NSApplic
 AppDelegate.swift              生命周期 + 管线编排（Fn → 录音 → 转录 → refine → 注入）
 AppState.swift                 @MainActor ObservableObject，UI/逻辑共享状态
 Support/
-  Language.swift               5 语言 enum + Whisper ISO 码 + Qwen 英文单词映射
+  Language.swift               5 语言 enum + Whisper ISO 码 + Qwen 英文单词映射 + isChinese 分支点
   Permissions.swift            麦克风 + 辅助功能权限查询/请求/跳转设置
   ModelStore.swift             按后端分目录 + isDownloaded/sizeOnDisk/delete + v0.1.0 迁移
   Logging.swift                os.Logger（subsystem = com.voicetyping.app）
+  LatencyTracker.swift         ASR/LLM/inject 三段 ms 埋点 → os_log
 Audio/
   AudioCapture.swift           AVAudioEngine 采集 + 实时 RMS 流 + 16 kHz 重采样累积
 ASR/
@@ -137,15 +150,19 @@ Inject/
   InputSourceManager.swift     TIS 查询当前 IME / 切换到 ABC / 还原
   TextInjector.swift           @MainActor，剪贴板快照 + IME 切换 + Cmd+V + 还原
 LLM/
-  LLMConfig.swift              Codable 配置 + UserDefaults 存取
-  LLMRefiner.swift             OpenAI 兼容请求 + 保守纠错 system prompt + 失败回落
+  LLMConfig.swift              Codable 配置 + UserDefaults 存取 + hasCredentials 判断
+  LLMRefiner.swift             OpenAI 兼容请求 + 按 RefineMode 选 system prompt + glossary 拼接 + 失败回落
+  RefineMode.swift             4 档枚举 + 3 份 system prompt 常量（off 短路、conservative/light/aggressive）
+  DictionaryEntry.swift        id / term / hints[] / note / createdAt / lastMatchedAt + hasContent / recency / dedupKey
+  CustomDictionary.swift       @MainActor，JSON 持久化，debounced 5s flush，损坏容错，import/export
+  GlossaryBuilder.swift        Qwen context / Whisper prompt / LLM glossary 三套 formatter + LRU + 贪心 budget + 命中扫描
 UI/
   CapsuleWindow.swift          NSPanel (nonactivatingPanel) + NSVisualEffectView (.hudWindow)
   CapsuleView.swift            SwiftUI 胶囊内容（HStack: 波形 + 文字）+ 尺寸 PreferenceKey
   Waveform5BarView.swift       5 根 RMS 驱动的波形条（attack/release 包络 + 抖动 + 权重）
 Menu/
-  StatusItemController.swift   NSStatusItem + 动态 NSMenu，订阅 AppState 变化
-  SettingsWindow.swift         NSWindow + SwiftUI Form：API Base URL / Key / Model / Test / Save
+  StatusItemController.swift   NSStatusItem + 动态 NSMenu，订阅 AppState 变化；Settings 升到顶级 ⌘,
+  SettingsWindow.swift         BorderlessKeyWindow + Liquid Glass (macOS 26+) + 3 tab：Models / LLM / Dictionary
 ```
 
 ## 4. 关键数据流
@@ -165,17 +182,35 @@ flowchart TD
     Release["用户松开 Fn"] --> FnUp["FnHotkeyMonitor .released"]
     FnUp --> AppUp["AppDelegate.handleFn .released"]
     AppUp --> Stop["AppDelegate.stopRecording"]
-    Stop --> Buf["AudioBuffer<br/>累积的 16 kHz Float32"]
-    Stop --> StateTrans["AppState.status = .transcribing"]
-    Buf --> Transcribe["recognizer.transcribe<br/>Whisper or Qwen 后端"]
+    Stop --> ShortGuard{"samples &gt;= 400?"}
+    ShortGuard -- no --> NoSpeech["flashInfo 'No speech'<br/>early return"]
+    ShortGuard -- yes --> Snap["Snapshot<br/>backend / language / dictEntries / mode / llmConfig / rawFirst / bundleID"]
+    Snap --> BuildCtx["GlossaryBuilder.buildForASR<br/>(backend, entries, language)<br/>→ ASR context"]
+    Snap --> StateTrans["AppState.status = .transcribing"]
+    BuildCtx --> Transcribe["recognizer.transcribe<br/>audio + language + context"]
     Transcribe --> RawText["raw text"]
-    RawText --> LLMCheck{"llmConfig.isUsable?"}
-    LLMCheck -- yes --> StateRef["AppState.status = .refining"]
-    StateRef --> Refine["LLMRefiner.refine<br/>保守纠错 (URLSession)"]
-    LLMCheck -- no --> Inject["TextInjector.inject<br/>⚠️ @MainActor"]
-    Refine --> Inject
-    Inject --> InjectSteps["1. 快照剪贴板<br/>2. 当前 IME<br/>3. 若 CJK → 切 ABC + sleep 30ms<br/>4. pasteboard.setString<br/>5. 合成 Cmd+V<br/>6. sleep 80ms<br/>7. 还原 IME<br/>8. 还原剪贴板"]
-    InjectSteps --> Hide["CapsuleWindow.hide<br/>alpha 0.22s"]
+    RawText --> ScanAsr["GlossaryBuilder.matchedEntryIDs<br/>→ dictionary.updateLastMatched"]
+    ScanAsr --> WillRefine{"mode.systemPrompt != nil<br/>AND llmConfig.hasCredentials?"}
+    WillRefine -- no --> InjectRaw["TextInjector.inject raw"]
+    WillRefine -- yes --> RawFirstCheck{"rawFirstEnabled?"}
+
+    RawFirstCheck -- no --> StateRef["AppState.status = .refining"]
+    StateRef --> BuildGloss["GlossaryBuilder.buildLLMGlossary<br/>Preserve 段 + Rewrite 段"]
+    BuildGloss --> Refine["LLMRefiner.refine<br/>(text, language, mode, glossary, config)"]
+    Refine --> ScanLLM["matchedEntryIDs on refined"]
+    ScanLLM --> InjectRefined["TextInjector.inject refined"]
+
+    RawFirstCheck -- yes --> InjectRawEarly["TextInjector.inject raw 立刻"]
+    InjectRawEarly --> BgRefine["后台 LLMRefiner.refine"]
+    BgRefine --> FocusCheck{"前台 bundleID 未变<br/>AND 用户未继续打字?"}
+    FocusCheck -- yes --> UndoPaste["合成 Cmd+Z<br/>+ inject refined"]
+    FocusCheck -- no --> Drop["丢弃 refined"]
+
+    InjectRaw --> Latency["LatencyTracker.log<br/>asr_ms / llm_ms / inject_ms"]
+    InjectRefined --> Latency
+    UndoPaste --> Latency
+    Drop --> Latency
+    Latency --> Hide["CapsuleWindow.hide<br/>alpha 0.22s"]
     Hide --> StateIdle["AppState.status = .idle"]
 ```
 
@@ -260,11 +295,19 @@ flowchart TD
 3. 是 CJK IME → 切到 `com.apple.keylayout.ABC`，sleep 30 ms 等切换生效
 4. 完成粘贴后还原原 IME
 
-### 5.4 LLM 保守纠错
+### 5.4 LLM 四档 refiner
 
-system prompt 强制 LLM **只**修复明显的语音识别错误（"配森"→"Python"），**不**改写、润色、翻译、删减。如果原文已正确 → 原样返回。详见 [`LLMRefiner.swift`](../Sources/VoiceTyping/LLM/LLMRefiner.swift) 中的 `systemPrompt` 字段。
+`RefineMode` 枚举选 system prompt：
+- `off`：短路，不调用 LLM
+- `conservative`（默认）：v0.2 等价——只修明显 ASR 错误，不改写不润色
+- `light`：conservative 基础上额外去 filler（"嗯嗯啊啊"）和结巴重复
+- `aggressive`：light 基础上再做自我纠正识别、列表格式化、语义润色，硬约束输出 `0.9×–1.5×` 输入字符数控 token 膨胀
+
+字典 glossary 拼在 system prompt 后（拆 Preserve + Rewrite 两段），详见 §5.7。
 
 LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
+
+详见 [`LLMRefiner.swift`](../Sources/VoiceTyping/LLM/LLMRefiner.swift) 和 [`RefineMode.swift`](../Sources/VoiceTyping/LLM/RefineMode.swift)。
 
 ### 5.5 实时 RMS 波形
 
@@ -286,6 +329,40 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 - 宽度自适应：SwiftUI 内部用 PreferenceKey 上报实测尺寸，CapsuleWindow 用 `NSAnimationContext` 平滑动画到新尺寸（spring 0.25 s）
 - 入场 0.35 s alpha fade-in，退场 0.22 s alpha fade-out
 
+### 5.7 自定义词典与双层注入
+
+**数据模型**：`DictionaryEntry { id, term, hints[], note?, createdAt, lastMatchedAt? }`。条目形态决定注入语义（三层 guard 拒绝空 term）：
+
+| 形态 | ASR context | LLM glossary 段位 | 语义 |
+|---|---|---|---|
+| 只 `term` | term | `Preserve`（do NOT paraphrase） | 纯热词 |
+| `term + hints` | term | `Rewrite`（`hint / hint → term`） | 发音重写规则 |
+| 只 `hints` / 空 | — | — | 非法，拒绝 |
+
+**双层注入点**（`GlossaryBuilder`）：
+
+| 入口 | API | 格式 | Budget |
+|---|---|---|---|
+| Qwen ASR (zh-\*) | `Qwen3ASRModel.transcribe(context:)` | `热词：X、Y、Z。` | 460 token |
+| Qwen ASR (其他) | 同上 | `X, Y, Z` | 460 token |
+| Whisper ASR | `DecodingOptions.promptTokens` | 空格分隔 term → `WhisperTokenizer.encode` | 200 token |
+| LLM refiner | system prompt 尾部 | Markdown `Preserve` + `Rewrite` 两段 | 1500 token |
+
+**注入算法**：
+1. 按 `max(lastMatchedAt, createdAt)` desc（LRU）排序
+2. 贪心填到 budget × 90% 截断，**不淘汰数据**——只决定本次注入谁
+3. ASR + LLM 两处扫输出，英文 `\b{term}\b`、中文 substring，命中的 entry 更新 `lastMatchedAt`
+
+**Qwen context 只注入 term 不注入 `hint→term` 映射**：实测 Qwen3-ASR 的 context 是声学锚定（"别把 Kubernetes 写成库伯内提斯"）而非跨语种发音替换（"配森→Python"），后者归 LLM。官方所有 context 示例也都是纯术语列表，`→` 语法零先例。详见 [devlog/v0.3.0.md](devlog/v0.3.0.md) Issue 1。
+
+**持久化**：`~/Library/Application Support/VoiceTyping/dictionary.json`，debounced 5 s flush（避免 `updateLastMatched` 高频 fsync），损坏时 rename `.corrupted-<ts>.json` 空启动。
+
+### 5.8 Raw-first 注入（可选优化）
+
+全局开关，默认关。开启后 ASR 完成立刻 inject raw，refiner 后台跑；refiner 返回时检查前台 bundle ID 未变 → 合成 Cmd+Z 撤销 + paste refined；否则丢弃 refined。用户延迟感知从 "ASR + LLM + inject" 降到 "ASR + inject"。
+
+详见 [`AppDelegate.swift`](../Sources/VoiceTyping/AppDelegate.swift) 的 `injectRawFirstThenRefine`。
+
 ## 6. 并发与线程模型
 
 主要的 isolation 策略：
@@ -303,6 +380,7 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 | `AudioCapture` | non-isolated, `@unchecked Sendable` | tap callback 在 AVAudioEngine 内部线程；用 `NSLock` 保护累积 buffer |
 | `FnHotkeyMonitor` | non-isolated, `@unchecked Sendable` | tap callback 在 CFRunLoop 主线程，但通过 AsyncStream 解耦给消费者 |
 | `LLMRefiner` | non-isolated, `Sendable` | 无状态 URLSession 封装，跨 actor 安全传递 |
+| `CustomDictionary` | `@MainActor` | 读写 `entries` + `@Published dictionaryTick` 触发 SwiftUI 重渲；UI 与 pipeline 都从主线程访问 |
 
 **关键陷阱**：Carbon TIS API（`TISCopyCurrentKeyboardInputSource`、`TISSelectInputSource`）会在非主队列调用时直接 SIGTRAP。详见 devlog v0.1.0 的崩溃修复。
 
@@ -310,7 +388,10 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 
 - 语言偏好：`UserDefaults.standard["language"]` 存 raw value（"en" / "zh-CN" 等）。AppState 在 `didSet` 中写入。
 - LLM 配置：`UserDefaults.standard["llmConfig"]` 存 JSON 序列化的 `LLMConfig`。同样在 `didSet` 中持久化。
+- Refine mode：`UserDefaults.standard["refineMode"]` 存 raw value（"off" / "conservative" / "light" / "aggressive"）。v0.2→v0.3 迁移：首次启动若无此键，从 `LLMConfig.enabled` 推断（true → conservative，false → off）。
+- Raw-first 开关：`UserDefaults.standard["rawFirstEnabled"]` 存 Bool，默认 false。
 - ASR 后端偏好：`UserDefaults.standard["asrBackend"]` 存 raw value（"whisper-large-v3" / "qwen-asr-0.6b" / "qwen-asr-1.7b"）。`AppState` init 时若发现 persisted 是 Qwen 但 MLX 不可用，自动降级到 `.default`（Whisper）。
+- 自定义词典：`~/Library/Application Support/VoiceTyping/dictionary.json`（**不**用 UserDefaults，目的是导入导出即存储、iCloud Drive 零成本同步迁移路径）。版本化 layout `{ version: 1, entries: [...] }`，debounced 5 s flush，损坏时 rename `.corrupted-<ts>.json` 空启动。详见 [`CustomDictionary.swift`](../Sources/VoiceTyping/LLM/CustomDictionary.swift)。
 - 模型缓存：`~/Library/Application Support/VoiceTyping/models/<backend-dir>/`：
   - `whisperkit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3/`（WhisperKit 自己会在 `downloadBase` 内加一层 `models/`）
   - `qwen-asr-0.6b/models/aufklarer/Qwen3-ASR-0.6B-MLX-4bit/`
@@ -353,5 +434,8 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 - Metal Toolchain 未装时 Qwen 后端不可用（但 app 不再崩，降级到 Whisper）。
 - ad-hoc 签名导致 TCC 授权在重建后失效。
 - Fn 监听仅基于 `kCGEventFlagsChanged.maskSecondaryFn`，未处理 NX_SYSDEFINED 系统事件子类型（部分外接键盘可能用此路径）。
-- 录音长度安全上限 60 秒（[`AudioCapture.maxDuration`](../Sources/VoiceTyping/Audio/AudioCapture.swift)）。
+- 录音长度安全上限 60 秒（[`AudioCapture.maxDuration`](../Sources/VoiceTyping/Audio/AudioCapture.swift)）。录音 < 400 samples（25 ms）会被 guard 拦截，不送 ASR（防 `WhisperFeatureExtractor` 空数组索引越界）。
 - WhisperKit 的下载进度是 indeterminate（上游 API 不暴露），只有 Qwen 后端有实时百分比。
+- 词典软上限 500 条（非硬 cap），真正限制是注入时的 token budget（Whisper 200 / Qwen 460 / LLM 1500）。
+- Qwen context 是声学锚定而非发音替换——"配森→Python"类跨语种重写由 LLM refiner 的 glossary `Rewrite` 段处理，不是 ASR 的职责。
+- Raw-first 在 Electron / Web 嵌入式输入框里的 focus 判定准确性未充分验证（v0.3.0 风险项）。

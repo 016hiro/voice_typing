@@ -42,4 +42,14 @@ public enum Language: String, CaseIterable, Codable, Sendable, Identifiable {
     }
 
     public static var `default`: Language { .zhCN }
+
+    /// True for zh-CN / zh-TW. Drives the Qwen ASR bias context to the
+    /// `热词：X、Y。` form seen in Alibaba's Chinese docs; other languages fall
+    /// back to the bare comma-separated list style used in the official CLI example.
+    var isChinese: Bool {
+        switch self {
+        case .zhCN, .zhTW: return true
+        case .en, .ja, .ko: return false
+        }
+    }
 }
