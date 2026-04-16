@@ -27,6 +27,91 @@ VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松
 
 ## 3. 模块地图
 
+### 3.1 模块依赖图
+
+```mermaid
+flowchart TB
+    subgraph Entry["入口"]
+        main[main.swift]
+        AppDel[AppDelegate]
+    end
+
+    subgraph State["状态层"]
+        AppState[AppState<br/>@MainActor ObservableObject]
+    end
+
+    subgraph Hotkey["热键层"]
+        FnMon[FnHotkeyMonitor<br/>CGEventTap]
+    end
+
+    subgraph Audio["音频层"]
+        AudioCap[AudioCapture<br/>AVAudioEngine]
+    end
+
+    subgraph ASR["ASR 层（协议化）"]
+        Protocol[SpeechRecognizer 协议]
+        Backend[ASRBackend enum<br/>+ MLXSupport 预检]
+        Factory[RecognizerFactory]
+        Whisper[WhisperKitRecognizer]
+        Qwen[QwenASRRecognizer]
+        Protocol -.implemented by.-> Whisper
+        Protocol -.implemented by.-> Qwen
+        Factory --> Backend
+        Factory --> Whisper
+        Factory --> Qwen
+    end
+
+    subgraph LLM["LLM 层"]
+        LLMR[LLMRefiner]
+        LLMC[LLMConfig]
+    end
+
+    subgraph Inject["注入层"]
+        Injector[TextInjector<br/>@MainActor]
+        IME[InputSourceManager<br/>Carbon TIS]
+        Injector --> IME
+    end
+
+    subgraph UI["UI 层"]
+        Status[StatusItemController<br/>NSStatusItem]
+        Settings[SettingsWindow<br/>SwiftUI Form + 2 tabs]
+        Capsule[CapsuleWindow<br/>NSPanel + HUD]
+        CapsuleV[CapsuleView + Waveform5BarView<br/>SwiftUI]
+        Capsule --> CapsuleV
+    end
+
+    subgraph Support["Support"]
+        Lang[Language]
+        Perm[Permissions]
+        Store[ModelStore<br/>每后端分目录 + 迁移]
+        Log[Logging os.Logger]
+    end
+
+    main --> AppDel
+    AppDel --> AppState
+    AppDel --> FnMon
+    AppDel --> AudioCap
+    AppDel --> Factory
+    AppDel --> LLMR
+    AppDel --> Injector
+    AppDel --> Status
+    AppDel --> Capsule
+    AppDel --> Perm
+
+    Status --> AppState
+    Status --> Settings
+    Settings --> Store
+    Settings --> LLMR
+    Capsule --> AppState
+
+    Whisper --> Store
+    Qwen --> Store
+    LLMR --> LLMC
+    AudioCap --> Lang
+```
+
+### 3.2 文件职责
+
 每个文件的职责（src 路径相对 `Sources/VoiceTyping/`）：
 
 ```
@@ -67,116 +152,83 @@ Menu/
 
 ### 4.1 录音→注入主管线
 
-```
-用户按住 Fn
-  │
-  ▼ CGEventTap (cgSessionEventTap, headInsertEventTap)
-FnHotkeyMonitor 检测 .maskSecondaryFn 切换
-  │  ◀── 回调返回 nil，抑制 OS 默认 Fn 行为（emoji picker）
-  ▼ AsyncStream<Transition>
-AppDelegate.handleFn(.pressed)
-  │
-  ▼
-AppDelegate.startRecording()
-  ├─ AudioCapture.start() → AsyncStream<Float> levels
-  ├─ AppState.status = .recording
-  └─ CapsuleWindow.show(levels:)
-                        │
-                        ▼ Waveform5BarView 在 .task 中订阅 levels
-                        每 ~30 Hz 应用包络:
-                          target = level * weights[i] * (1 + ±4% jitter)
-                          attack 40% / release 15%
+```mermaid
+flowchart TD
+    Press[用户按住 Fn] -->|CGEventTap<br/>回调返回 nil 抑制 emoji picker| FnDown[FnHotkeyMonitor .pressed]
+    FnDown -->|AsyncStream| AppDown[AppDelegate.handleFn .pressed]
+    AppDown --> Start[AppDelegate.startRecording]
+    Start --> Cap[AudioCapture.start<br/>16 kHz mono Float32 累积]
+    Start --> StateRec[AppState.status = .recording]
+    Start --> ShowCap[CapsuleWindow.show]
+    Cap -->|AsyncStream Float ~30 Hz| Wave[Waveform5BarView<br/>weights + attack 40% / release 15% + ±4% jitter]
 
-用户松开 Fn
-  │
-  ▼ FnHotkeyMonitor → .released
-AppDelegate.handleFn(.released)
-  │
-  ▼
-AppDelegate.stopRecording()
-  ├─ buffer = AudioCapture.stop()         (返回累积的 16 kHz mono [Float])
-  ├─ AppState.status = .transcribing
-  └─ pipelineTask = Task { …异步管线… }
-                                │
-                                ▼ await on cooperative queue
-                  WhisperKitRecognizer.transcribe(buffer, language)
-                                │
-                                ▼ raw text
-                  if AppState.llmConfig.isUsable {
-                    AppState.status = .refining   (主线程)
-                    LLMRefiner.refine(text, language, config)  (URLSession)
-                  }
-                                │
-                                ▼ final text
-                  await TextInjector.inject(text)   ⚠️ 跳到主线程
-                    1. 快照剪贴板 (NSPasteboard.pasteboardItems)
-                    2. 当前 IME = TISCopyCurrentKeyboardInputSource()
-                    3. if isCJKInputMethod → TISSelectInputSource(ABC); sleep 30 ms
-                    4. pasteboard.setString(text, .string)
-                    5. 合成 Cmd+V (CGEvent)
-                    6. sleep 80 ms
-                    7. 还原 IME
-                    8. 还原剪贴板
-                                │
-                                ▼
-                  CapsuleWindow.hide() (alpha 动画 0.22 s)
-                  AppState.status = .idle
+    Release[用户松开 Fn] --> FnUp[FnHotkeyMonitor .released]
+    FnUp --> AppUp[AppDelegate.handleFn .released]
+    AppUp --> Stop[AppDelegate.stopRecording]
+    Stop --> Buf[AudioBuffer<br/>累积的 16 kHz Float32]
+    Stop --> StateTrans[AppState.status = .transcribing]
+    Buf --> Transcribe[recognizer.transcribe<br/>Whisper or Qwen 后端]
+    Transcribe --> RawText[raw text]
+    RawText --> LLMCheck{llmConfig.isUsable?}
+    LLMCheck -- yes --> StateRef[AppState.status = .refining]
+    StateRef --> Refine[LLMRefiner.refine<br/>保守纠错 URLSession]
+    LLMCheck -- no --> Inject[TextInjector.inject<br/>⚠️ @MainActor]
+    Refine --> Inject
+    Inject --> InjectSteps["1. 快照剪贴板<br/>2. 当前 IME<br/>3. 若 CJK → 切 ABC + sleep 30ms<br/>4. pasteboard.setString<br/>5. 合成 Cmd+V<br/>6. sleep 80ms<br/>7. 还原 IME<br/>8. 还原剪贴板"]
+    InjectSteps --> Hide[CapsuleWindow.hide<br/>alpha 0.22s]
+    Hide --> StateIdle[AppState.status = .idle]
 ```
 
 ### 4.2 模型加载流
 
-```
-启动 / 用户从菜单选 Model
-  │
-  ▼
-AppDelegate.activateBackend(backend)
-  ├─ (如之前是 Qwen) old.unload()  释放 MLX 权重
-  ├─ recognizer = RecognizerFactory.make(backend)
-  └─ Task.detached { recognizer.prepare() }
-                                         │
-           ┌─────────────────────────────┴─────────────────────────────┐
-           │                                                             │
-           ▼ WhisperKitRecognizer                                        ▼ QwenASRRecognizer
-    WhisperKitConfig(                                            preflight: MLXSupport.isAvailable
-      model, downloadBase = <backendDir>,                         若否 → setState(.failed(...)) 立即返回
-      modelRepo, download:true, prewarm:true, load:true)          （避免 MLX C++ 异常杀进程）
-           │                                                             │
-           ▼ 下载到                                                       ▼
-    <backendDir>/models/argmaxinc/                               Qwen3ASRModel.fromPretrained(
-      whisperkit-coreml/openai_whisper-large-v3/                     modelId = "aufklarer/Qwen3-ASR-X-MLX-Xbit",
-        AudioEncoder.mlmodelc     (~1.2 GB)                          cacheDir = <backendDir>/models/<modelId>/,
-        TextDecoder.mlmodelc      (~1.5 GB)                          progressHandler: { fraction, status in
-        MelSpectrogram.mlmodelc                                          setState(.loading(progress: fraction))
-        config.json                                                  })
-           │                                                             │
-           ▼ CoreML 编译 + 加载 (RSS ~1.9 GB)                             ▼ HuggingFaceDownloader.snapshot
-    setState(.ready)                                              下载到同一个 cacheDir：
-                                                                    config.json / vocab.json / merges.txt
-                                                                    tokenizer_config.json / *.safetensors
-                                                                         │
-                                                                         ▼ WeightLoader.loadWeights (MLX)
-                                                                  setState(.ready)
+```mermaid
+flowchart TD
+    Trigger[启动 / 用户菜单选 Model] --> Activate[AppDelegate.activateBackend]
+    Activate -->|如前是 Qwen| Unload[old.unload<br/>释放 MLX 权重]
+    Activate --> Cancel[取消旧 recognizer 的 stateStream 订阅]
+    Activate --> Make[RecognizerFactory.make]
+    Make --> Detached[Task.detached: recognizer.prepare]
+    Detached --> Branch{后端类型?}
 
-backendDir = ~/Library/Application Support/VoiceTyping/models/<storageDirName>/
-  其中 storageDirName ∈ { whisperkit, qwen-asr-0.6b, qwen-asr-1.7b }
+    Branch -- WhisperKit --> WhisperCfg[WhisperKitConfig<br/>downloadBase = backendDir<br/>download + prewarm + load]
+    WhisperCfg --> WhisperDL["下载到<br/>backendDir/models/argmaxinc/<br/>whisperkit-coreml/openai_whisper-large-v3/"]
+    WhisperDL --> WhisperFiles[AudioEncoder.mlmodelc ~1.2 GB<br/>TextDecoder.mlmodelc ~1.5 GB<br/>MelSpectrogram.mlmodelc]
+    WhisperFiles --> WhisperReady[CoreML 编译 + 加载 RSS ~1.9 GB<br/>setState .ready]
+
+    Branch -- Qwen --> Preflight{MLXSupport<br/>.isAvailable?}
+    Preflight -- no --> Failed[setState .failed<br/>避免 MLX C++ 异常杀进程]
+    Preflight -- yes --> QwenFrom["Qwen3ASRModel.fromPretrained<br/>modelId = aufklarer/Qwen3-ASR-X-MLX-Xbit<br/>cacheDir = backendDir/models/modelId/<br/>progressHandler → setState .loading progress"]
+    QwenFrom --> QwenDL[HuggingFaceDownloader.snapshot<br/>config.json / vocab.json / merges.txt<br/>tokenizer_config.json / *.safetensors]
+    QwenDL --> QwenLoad[WeightLoader.loadWeights MLX]
+    QwenLoad --> QwenReady[setState .ready]
+
+    WhisperReady --> Menu[StatusItemController<br/>图标 + 菜单更新]
+    QwenReady --> Menu
+    Failed --> Menu
 ```
 
-切换后端时 `AppDelegate.activateBackend` 会取消前一个 recognizer 的 state 订阅并新订阅新的；
-前一个 Qwen 的 MLX 权重会被 `unload()` 释放；老的模型文件保留在磁盘（下次切回零等待）。
+路径：`backendDir = ~/Library/Application Support/VoiceTyping/models/<storageDirName>/`，`storageDirName ∈ { whisperkit, qwen-asr-0.6b, qwen-asr-1.7b }`。
+
+切换后端时 `AppDelegate.activateBackend` 会取消前一个 recognizer 的 state 订阅并新订阅新的；前一个 Qwen 的 MLX 权重会被 `unload()` 释放；老的模型文件保留在磁盘（下次切回零等待）。
 
 ### 4.3 权限流
 
-```
-applicationDidFinishLaunching
-  │
-  ├─ Permissions.requestMicrophone()  → OS 弹窗 → AppState.microphoneGranted
-  ├─ FnHotkeyMonitor.start(promptIfNeeded: true)
-  │     │
-  │     ▼ AXIsProcessTrustedWithOptions(prompt:true)
-  │     若 false → OS 弹辅助功能引导对话框 → 抛 .accessibilityDenied
-  │
-  └─ Timer 每 2 s 轮询 Permissions.checkAccessibility(prompt:false)
-         若从 false → true：自动重新 start() Fn 监听
+```mermaid
+flowchart TD
+    Launch[applicationDidFinishLaunching] --> Mic[Permissions.requestMicrophone<br/>OS 弹窗]
+    Launch --> Fn[FnHotkeyMonitor.start<br/>promptIfNeeded: true]
+    Launch --> Poll["Timer 每 2s 轮询<br/>checkAccessibility prompt:false"]
+
+    Mic --> MicGrant[AppState.microphoneGranted]
+
+    Fn --> AX{AXIsProcessTrusted<br/>WithOptions?}
+    AX -- false --> AXPrompt[OS 辅助功能弹窗<br/>+ 抛 .accessibilityDenied]
+    AX -- true --> Tap[CGEventTap 安装成功]
+
+    Poll --> Detect{之前 false<br/>现在 true?}
+    Detect -- yes --> Restart[重新 startFnMonitor]
+    Detect -- no --> Poll
+    Restart --> AX
 ```
 
 ## 5. 关键设计决策
