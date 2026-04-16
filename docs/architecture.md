@@ -1,14 +1,14 @@
 # VoiceTyping 架构
 
-> 截至 v0.1.0。本文档跟随代码同步更新，发现不一致以代码为准。
+> 截至 v0.2.0。本文档跟随代码同步更新，发现不一致以代码为准。
 
 ## 1. 概览
 
 VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松开后将转录文本通过剪贴板 + Cmd+V 注入到当前焦点输入框。默认中文（zh-CN），支持五种语言切换；可选 LLM 后处理纠正中英混杂的识别错误。
 
 **运行模式**：LSUIElement（仅菜单栏图标，无 Dock 图标）。
-**目标平台**：macOS 14+，Apple Silicon (arm64)。
-**构建**：Swift Package Manager + Makefile。
+**目标平台**：macOS 15+，Apple Silicon (arm64)（MLX Swift 要求）。
+**构建**：Swift Package Manager (tools 6.0) + Makefile。
 
 ## 2. 技术栈
 
@@ -17,11 +17,13 @@ VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松
 | UI | AppKit + SwiftUI（NSHostingView 桥接） | 菜单栏走 AppKit，胶囊走 SwiftUI |
 | 全局热键 | CGEventTap (Quartz) | 监听 `kCGEventFlagsChanged` 检测 Fn |
 | 音频 | AVAudioEngine | 采集 → 16 kHz mono float32 |
-| 语音识别 | WhisperKit 0.18 (CoreML, 本地) | 默认 `openai_whisper-large-v3` |
+| 语音识别 | `SpeechRecognizer` 协议 + 2 个实现 | 详见 §5.1；运行时切换 |
+| ASR backend A | WhisperKit 0.9+ (CoreML) | `openai_whisper-large-v3`，~3 GB |
+| ASR backend B | `soniqo/speech-swift` 0.0.9+ (MLX) | `Qwen3-ASR 0.6B/1.7B`，~400 MB / ~1.4 GB |
 | LLM | URLSession + OpenAI 兼容 chat completions | 可选 |
 | 输入法切换 | Carbon TextInputServices (TIS) | CJK IME 检测与临时切换 |
 | 文本注入 | NSPasteboard + 合成 Cmd+V (CGEvent) | |
-| 持久化 | UserDefaults | 语言偏好、LLM 配置 |
+| 持久化 | UserDefaults | 语言偏好、LLM 配置、当前后端 |
 
 ## 3. 模块地图
 
@@ -32,15 +34,18 @@ main.swift                     入口；MainActor.assumeIsolated 启动 NSApplic
 AppDelegate.swift              生命周期 + 管线编排（Fn → 录音 → 转录 → refine → 注入）
 AppState.swift                 @MainActor ObservableObject，UI/逻辑共享状态
 Support/
-  Language.swift               5 语言 enum + Whisper 语言代码映射
+  Language.swift               5 语言 enum + Whisper ISO 码 + Qwen 英文单词映射
   Permissions.swift            麦克风 + 辅助功能权限查询/请求/跳转设置
-  ModelStore.swift             ~/Library/Application Support/VoiceTyping/models 路径
+  ModelStore.swift             按后端分目录 + isDownloaded/sizeOnDisk/delete + v0.1.0 迁移
   Logging.swift                os.Logger（subsystem = com.voicetyping.app）
 Audio/
   AudioCapture.swift           AVAudioEngine 采集 + 实时 RMS 流 + 16 kHz 重采样累积
 ASR/
   SpeechRecognizer.swift       协议：prepare/transcribe/cancel + 类型 (AudioBuffer, RecognizerState)
-  WhisperKitRecognizer.swift   WhisperKit 实现，下载 + 加载 + 调用
+  ASRBackend.swift             三档后端 enum + MLXSupport 预检 + default 选择策略
+  RecognizerFactory.swift      根据 ASRBackend 构造对应 recognizer
+  WhisperKitRecognizer.swift   WhisperKit 实现
+  QwenASRRecognizer.swift      MLX (soniqo/speech-swift) 实现 + OSAllocatedUnfairLock 串行化
 Hotkey/
   FnHotkeyMonitor.swift        CGEventTap 监听 Fn flagsChanged，回调返回 nil 抑制 emoji 选择器
 Inject/
@@ -121,37 +126,43 @@ AppDelegate.stopRecording()
 ### 4.2 模型加载流
 
 ```
-启动
-  │
-  ▼ Task.detached
-WhisperKitRecognizer.prepare()
-  │
-  ├─ setState(.loading(progress: -1))   (indeterminate)
+启动 / 用户从菜单选 Model
   │
   ▼
-WhisperKit(WhisperKitConfig(
-    model: "openai_whisper-large-v3",
-    downloadBase: ~/Library/Application Support/VoiceTyping/models,
-    modelRepo: "argmaxinc/whisperkit-coreml",
-    download: true, prewarm: true, load: true))
-  │
-  ▼ 文件下载到
-  ~/Library/Application Support/VoiceTyping/models/
-    models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3/
-      AudioEncoder.mlmodelc     (~1.2 GB)
-      TextDecoder.mlmodelc      (~1.5 GB)
-      MelSpectrogram.mlmodelc   (~小)
-      config.json
-  │
-  ▼ CoreML 编译 + 加载 (RSS ~1.9 GB)
-setState(.ready)
-  │
-  ▼ stateStream
-AppDelegate 监听 → AppState.recognizerState = .ready
-  │
-  ▼
-StatusItemController 切换图标 mic.fill
+AppDelegate.activateBackend(backend)
+  ├─ (如之前是 Qwen) old.unload()  释放 MLX 权重
+  ├─ recognizer = RecognizerFactory.make(backend)
+  └─ Task.detached { recognizer.prepare() }
+                                         │
+           ┌─────────────────────────────┴─────────────────────────────┐
+           │                                                             │
+           ▼ WhisperKitRecognizer                                        ▼ QwenASRRecognizer
+    WhisperKitConfig(                                            preflight: MLXSupport.isAvailable
+      model, downloadBase = <backendDir>,                         若否 → setState(.failed(...)) 立即返回
+      modelRepo, download:true, prewarm:true, load:true)          （避免 MLX C++ 异常杀进程）
+           │                                                             │
+           ▼ 下载到                                                       ▼
+    <backendDir>/models/argmaxinc/                               Qwen3ASRModel.fromPretrained(
+      whisperkit-coreml/openai_whisper-large-v3/                     modelId = "aufklarer/Qwen3-ASR-X-MLX-Xbit",
+        AudioEncoder.mlmodelc     (~1.2 GB)                          cacheDir = <backendDir>/models/<modelId>/,
+        TextDecoder.mlmodelc      (~1.5 GB)                          progressHandler: { fraction, status in
+        MelSpectrogram.mlmodelc                                          setState(.loading(progress: fraction))
+        config.json                                                  })
+           │                                                             │
+           ▼ CoreML 编译 + 加载 (RSS ~1.9 GB)                             ▼ HuggingFaceDownloader.snapshot
+    setState(.ready)                                              下载到同一个 cacheDir：
+                                                                    config.json / vocab.json / merges.txt
+                                                                    tokenizer_config.json / *.safetensors
+                                                                         │
+                                                                         ▼ WeightLoader.loadWeights (MLX)
+                                                                  setState(.ready)
+
+backendDir = ~/Library/Application Support/VoiceTyping/models/<storageDirName>/
+  其中 storageDirName ∈ { whisperkit, qwen-asr-0.6b, qwen-asr-1.7b }
 ```
+
+切换后端时 `AppDelegate.activateBackend` 会取消前一个 recognizer 的 state 订阅并新订阅新的；
+前一个 Qwen 的 MLX 权重会被 `unload()` 释放；老的模型文件保留在磁盘（下次切回零等待）。
 
 ### 4.3 权限流
 
@@ -172,9 +183,11 @@ applicationDidFinishLaunching
 
 ### 5.1 ASR 协议化（核心可扩展点）
 
-`SpeechRecognizer` 是一个简单协议（`prepare` / `transcribe` / `cancel` + 状态流）。任何后端只要实现这三个方法就能替换 WhisperKit：本地小模型、whisper.cpp、Apple SFSpeechRecognizer、云 API（OpenAI Whisper / Groq / Deepgram）等。
+`SpeechRecognizer` 是一个简单协议（`prepare` / `transcribe` / `cancel` + 状态流）。已有两个实现（`WhisperKitRecognizer`、`QwenASRRecognizer`），新增后端只要实现这三个方法 + 在 `ASRBackend` enum 加一个 case + 在 `RecognizerFactory.make` 加一个分支。菜单 / 设置 / 持久化无需改动。
 
 协议派发的开销在 Swift 中是亚微秒级，相对 ASR 本身的秒级耗时完全可忽略。详见 [`SpeechRecognizer.swift`](../Sources/VoiceTyping/ASR/SpeechRecognizer.swift)。
+
+`ASRBackend` 在 `default` 时做 `MLXSupport.isAvailable` 预检：如果 app bundle 里没 `mlx.metallib`（没跑 `make setup-metal`），默认降级到 Whisper large-v3，保证 app 不会开机就崩。用户仍可从菜单手动选 Qwen，但此时 prepare 会提前返回 `.failed` 而不碰 MLX。详见 [`ASRBackend.swift`](../Sources/VoiceTyping/ASR/ASRBackend.swift)。
 
 ### 5.2 Fn 抑制
 
@@ -233,9 +246,11 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 | `TextInjector` | `@MainActor` ⚠️ | TIS API 用 `dispatch_assert_queue` 强制要求主队列；CGEvent.post 也是主线程敏感 |
 | `CapsuleWindow` | `@MainActor`（隐式继承） | NSWindow API |
 | `WhisperKitRecognizer` | non-isolated, `@unchecked Sendable` | 后台运行 ASR；内部 lock 保护状态 |
+| `QwenASRRecognizer` | non-isolated, `@unchecked Sendable` | Qwen3ASRModel 本身不是 Sendable 且 `transcribe()` 是同步阻塞调用；我们用 `OSAllocatedUnfairLock` 串行化 + 在 `Task.detached` 跑，避免阻塞调用方 |
+| `InputSourceManager` | `@unchecked Sendable` | 只在 `TextInjector`（主线程）调用，Carbon TIS API 隐含主线程 |
 | `AudioCapture` | non-isolated, `@unchecked Sendable` | tap callback 在 AVAudioEngine 内部线程；用 `NSLock` 保护累积 buffer |
 | `FnHotkeyMonitor` | non-isolated, `@unchecked Sendable` | tap callback 在 CFRunLoop 主线程，但通过 AsyncStream 解耦给消费者 |
-| `LLMRefiner` | non-isolated | URLSession async/await，跑在 cooperative queue |
+| `LLMRefiner` | non-isolated, `Sendable` | 无状态 URLSession 封装，跨 actor 安全传递 |
 
 **关键陷阱**：Carbon TIS API（`TISCopyCurrentKeyboardInputSource`、`TISSelectInputSource`）会在非主队列调用时直接 SIGTRAP。详见 devlog v0.1.0 的崩溃修复。
 
@@ -243,7 +258,12 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 
 - 语言偏好：`UserDefaults.standard["language"]` 存 raw value（"en" / "zh-CN" 等）。AppState 在 `didSet` 中写入。
 - LLM 配置：`UserDefaults.standard["llmConfig"]` 存 JSON 序列化的 `LLMConfig`。同样在 `didSet` 中持久化。
-- 模型缓存：`~/Library/Application Support/VoiceTyping/models/`，由 WhisperKit 管理子目录结构。
+- ASR 后端偏好：`UserDefaults.standard["asrBackend"]` 存 raw value（"whisper-large-v3" / "qwen-asr-0.6b" / "qwen-asr-1.7b"）。`AppState` init 时若发现 persisted 是 Qwen 但 MLX 不可用，自动降级到 `.default`（Whisper）。
+- 模型缓存：`~/Library/Application Support/VoiceTyping/models/<backend-dir>/`：
+  - `whisperkit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3/`（WhisperKit 自己会在 `downloadBase` 内加一层 `models/`）
+  - `qwen-asr-0.6b/models/aufklarer/Qwen3-ASR-0.6B-MLX-4bit/`
+  - `qwen-asr-1.7b/models/aufklarer/Qwen3-ASR-1.7B-MLX-8bit/`
+- v0.1.0 → v0.2.0 迁移：启动时若发现 `<modelsURL>/models/`（v0.1.0 平铺路径）存在而 `<modelsURL>/whisperkit/models/` 不存在，整体 `mv` 过去。详见 [`ModelStore.migrateV010WhisperLayoutIfNeeded`](../Sources/VoiceTyping/Support/ModelStore.swift)。
 
 ## 8. 权限模型
 
@@ -262,7 +282,9 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 
 | target | 作用 |
 |---|---|
-| `make build` | `swift build -c release --arch arm64` → 复制到 `build/VoiceTyping.app/Contents/{MacOS,Resources}` → ad-hoc codesign + entitlements |
+| `make setup-metal` | **一次性**：`xcodebuild -downloadComponent MetalToolchain`。Qwen (MLX) 后端需要，没装则 app 启动时默认降级到 Whisper |
+| `make metallib` | 调 `scripts/build_mlx_metallib.sh` 把 MLX 的 33 个 metal kernel 编译成 `.build/release/mlx.metallib`（~100 MB） |
+| `make build` | `metallib` → `swift build -c release --arch arm64` → 复制到 `build/VoiceTyping.app/Contents/{MacOS,Resources}` → 嵌入 `mlx.metallib` → ad-hoc codesign + entitlements |
 | `make run` | `make build` 后 `open` 这个 .app |
 | `make install` | 将 `build/VoiceTyping.app` 拷到 `/Applications/` |
 | `make debug` | 仅 `swift build`（不打包），用于快速 lint |
@@ -270,10 +292,14 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 
 签名是 ad-hoc (`codesign --sign -`)，仅本地开发可用。entitlements 包含 `com.apple.security.device.audio-input`。Info.plist 设置 `LSUIElement=YES` 隐藏 Dock 图标。
 
+**MLX metallib 查找顺序**（运行时）：`Contents/MacOS/mlx.metallib` → `Resources/mlx.metallib` → SwiftPM bundle `default.metallib` → `Resources/default.metallib` → 编译时 `METAL_PATH`。我们 `cp` 到 MacOS 目录是因为它最高优先级。
+
 ## 10. 已知限制
 
-- 仅支持 Apple Silicon。Intel Mac 需要切换到 whisper.cpp（重新实现 `SpeechRecognizer`）。
-- 大模型首次启动需下载 ~3 GB（large-v3 的 CoreML 格式）。
+- 仅支持 Apple Silicon + macOS 15+（MLX Swift 和 `soniqo/speech-swift` 要求）。Intel Mac / Sonoma 留在 v0.1.x。
+- 首次加载对应后端需要下载（Whisper ~3 GB / Qwen-1.7B ~1.4 GB / Qwen-0.6B ~400 MB）。
+- Metal Toolchain 未装时 Qwen 后端不可用（但 app 不再崩，降级到 Whisper）。
 - ad-hoc 签名导致 TCC 授权在重建后失效。
 - Fn 监听仅基于 `kCGEventFlagsChanged.maskSecondaryFn`，未处理 NX_SYSDEFINED 系统事件子类型（部分外接键盘可能用此路径）。
 - 录音长度安全上限 60 秒（[`AudioCapture.maxDuration`](../Sources/VoiceTyping/Audio/AudioCapture.swift)）。
+- WhisperKit 的下载进度是 indeterminate（上游 API 不暴露），只有 Qwen 后端有实时百分比。

@@ -4,9 +4,9 @@ A macOS menu-bar voice input app. Hold **Fn** to dictate, release to paste the t
 
 - Default language: Simplified Chinese (zh-CN). Also supports English, Traditional Chinese, Japanese, Korean.
 - Swappable local ASR backend (select from the menu):
-  - **Qwen3-ASR 1.7B** (MLX, ~1.4 GB, new default) — SOTA open-source ASR, beats Whisper-large-v3 on multilingual benchmarks
-  - **Qwen3-ASR 0.6B** (MLX, ~400 MB) — faster, lighter; used by future streaming mode
-  - **Whisper large-v3** (WhisperKit, ~3 GB) — kept for comparison and fallback
+  - **Qwen3-ASR 1.7B** (MLX, ~1.4 GB) — SOTA open-source ASR, beats Whisper-large-v3 on multilingual benchmarks. Default when MLX is available.
+  - **Qwen3-ASR 0.6B** (MLX, ~400 MB) — faster, lighter; intended for future streaming mode
+  - **Whisper large-v3** (WhisperKit, ~3 GB) — fallback when the Metal Toolchain (required by MLX) isn't installed
 - Optional LLM post-processing layer fixes misrecognitions conservatively (e.g. 配森→Python, 杰森→JSON). OpenAI-compatible API.
 - Frameless capsule HUD with real-time RMS-driven 5-bar waveform.
 - Pasteboard + Cmd+V injection with CJK IME detection and temporary switch to ASCII.
@@ -32,7 +32,9 @@ make install      # copies to /Applications
 make clean
 ```
 
-On first launch, grant **Microphone** and **Accessibility** permissions when prompted. The default Qwen3-ASR 1.7B model (~1.4 GB) downloads in the background; progress shown in the menu bar.
+On first launch, grant **Microphone** and **Accessibility** permissions when prompted. The default ASR model downloads in the background; progress shown in the menu bar. You can switch models anytime via the menu — cached models don't re-download.
+
+If you skip `make setup-metal`, the app still boots but defaults to Whisper large-v3; Qwen options show "MLX shaders missing" until you install the toolchain and rebuild.
 
 ## Architecture
 
