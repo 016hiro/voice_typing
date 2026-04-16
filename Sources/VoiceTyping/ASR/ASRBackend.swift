@@ -59,5 +59,23 @@ public enum ASRBackend: String, CaseIterable, Codable, Sendable, Identifiable {
         }
     }
 
-    public static var `default`: ASRBackend { .qwenASR17B }
+    public static var `default`: ASRBackend {
+        // Prefer Qwen 1.7B when MLX shaders are bundled with the app; otherwise fall
+        // back to Whisper so the app boots cleanly on machines without the Metal Toolchain.
+        return MLXSupport.isAvailable ? .qwenASR17B : .whisperLargeV3
+    }
+}
+
+/// Detects whether `mlx.metallib` is colocated with the executable so MLX can load.
+/// Without it, calling into MLX aborts the whole process via a C++ exception.
+enum MLXSupport {
+    static var isAvailable: Bool {
+        guard let exec = Bundle.main.executableURL else { return false }
+        let candidates = [
+            exec.deletingLastPathComponent().appendingPathComponent("mlx.metallib"),
+            exec.deletingLastPathComponent().appendingPathComponent("Resources/mlx.metallib"),
+            exec.deletingLastPathComponent().appendingPathComponent("Resources/default.metallib")
+        ]
+        return candidates.contains { FileManager.default.fileExists(atPath: $0.path) }
+    }
 }

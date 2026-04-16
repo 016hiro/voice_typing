@@ -44,6 +44,20 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
     }
 
     public func prepare() async throws {
+        // MLX aborts the process via a C++ exception if `mlx.metallib` isn't colocated
+        // with the executable. Detect that condition before touching MLX.
+        guard MLXSupport.isAvailable else {
+            let err = NSError(
+                domain: "VoiceTyping.ASR",
+                code: 100,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "MLX shaders missing — run `make setup-metal` then rebuild to enable Qwen backends."
+                ]
+            )
+            setState(.failed(err))
+            throw err
+        }
+
         setState(.loading(progress: 0))
 
         do {

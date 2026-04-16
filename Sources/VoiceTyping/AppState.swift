@@ -42,10 +42,14 @@ final class AppState: ObservableObject {
         self.llmConfig = LLMConfigStore.load()
 
         let backendRaw = UserDefaults.standard.string(forKey: "asrBackend")
-        if let raw = backendRaw, let b = ASRBackend(rawValue: raw) {
-            self.asrBackend = b
-        } else {
+        let persisted = backendRaw.flatMap { ASRBackend(rawValue: $0) } ?? .default
+        // Don't autoload a Qwen backend if MLX isn't bundled; downgrade to default
+        // (which is itself MLX-aware). User can still manually pick Qwen from the menu;
+        // they'll then see the "MLX shaders missing" error in Manage Models.
+        if persisted.isQwen && !MLXSupport.isAvailable {
             self.asrBackend = .default
+        } else {
+            self.asrBackend = persisted
         }
     }
 
