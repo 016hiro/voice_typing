@@ -1,6 +1,7 @@
 import Foundation
 
-final class LLMRefiner {
+/// Stateless OpenAI-compatible chat client; safe to share across actors.
+final class LLMRefiner: Sendable {
 
     enum TestResult {
         case ok(sampleReply: String)

@@ -9,7 +9,10 @@ enum Permissions {
     /// the system shows the "open System Settings" dialog.
     @discardableResult
     static func checkAccessibility(prompt: Bool) -> Bool {
-        let options: [String: Any] = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt]
+        // kAXTrustedCheckOptionPrompt is a Carbon CFStringRef constant whose value is
+        // documented as "AXTrustedCheckOptionPrompt"; we hardcode it to sidestep the
+        // strict-concurrency diagnostic on the extern var.
+        let options: [String: Any] = ["AXTrustedCheckOptionPrompt": prompt]
         return AXIsProcessTrustedWithOptions(options as CFDictionary)
     }
 

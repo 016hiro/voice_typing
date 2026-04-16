@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Qwen3ASR
 
 /// Wraps `soniqo/speech-swift`'s `Qwen3ASRModel` behind our `SpeechRecognizer` protocol.
@@ -10,9 +11,9 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
     private let cacheDir: URL
 
     /// `Qwen3ASRModel` is a class; keep it alive for the recognizer's lifetime.
-    /// Access is serialized by `transcribeLock`.
+    /// Access is serialized by `transcribeLock` (async-safe).
     private var model: Qwen3ASRModel?
-    private let transcribeLock = NSLock()
+    private let transcribeLock = OSAllocatedUnfairLock()
 
     private let stateLock = NSLock()
     private var _state: RecognizerState = .unloaded
@@ -82,19 +83,19 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
                 throw NSError(domain: "VoiceTyping.ASR", code: 2,
                               userInfo: [NSLocalizedDescriptionKey: "Recognizer was deallocated"])
             }
-            self.transcribeLock.lock()
-            defer { self.transcribeLock.unlock() }
-            guard let model = self.model else {
-                throw NSError(domain: "VoiceTyping.ASR", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey: "Recognizer not prepared"])
+            return try self.transcribeLock.withLock { () throws -> String in
+                guard let model = self.model else {
+                    throw NSError(domain: "VoiceTyping.ASR", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "Recognizer not prepared"])
+                }
+                return model.transcribe(
+                    audio: samples,
+                    sampleRate: sr,
+                    language: lang,
+                    maxTokens: 448,
+                    context: nil
+                )
             }
-            return model.transcribe(
-                audio: samples,
-                sampleRate: sr,
-                language: lang,
-                maxTokens: 448,
-                context: nil
-            )
         }.value
 
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -109,10 +110,10 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
 
     /// Free model weights. Called when the backend is being swapped out.
     public func unload() {
-        transcribeLock.lock()
-        defer { transcribeLock.unlock() }
-        model?.unload()
-        model = nil
+        transcribeLock.withLock {
+            model?.unload()
+            model = nil
+        }
         setState(.unloaded)
     }
 

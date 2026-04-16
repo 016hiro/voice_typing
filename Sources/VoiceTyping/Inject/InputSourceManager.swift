@@ -1,13 +1,15 @@
 import Foundation
 import Carbon.HIToolbox
 
-final class InputSourceManager {
+final class InputSourceManager: @unchecked Sendable {
 
     enum Error: Swift.Error {
         case noASCIISource
         case selectFailed(OSStatus)
     }
 
+    /// Carbon TIS APIs require the main thread; this singleton is only ever called
+    /// from `TextInjector` which is `@MainActor`-isolated.
     static let shared = InputSourceManager()
 
     // MARK: - Queries
