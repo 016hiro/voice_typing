@@ -75,12 +75,17 @@ final class ContextProfileStore {
 
     // MARK: - Lookup
 
-    /// First enabled profile whose `bundleID` matches `bundleID` exactly.
+    /// First enabled profile whose `bundleID` matches `bundleID`.
     /// Returns `nil` when nothing matches or when `bundleID` is nil/empty.
+    ///
+    /// Comparison is case-insensitive to mirror `dedupKey` and match Apple's
+    /// convention: bundle identifiers are tokens, not strings with meaningful
+    /// case. A JSON hand-edit that differs only in case still resolves.
     func lookup(bundleID: String?) -> ContextProfile? {
-        guard let bid = bundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !bid.isEmpty else { return nil }
-        return profiles.first { $0.enabled && $0.bundleID == bid }
+        guard let raw = bundleID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        let needle = raw.lowercased()
+        return profiles.first { $0.enabled && $0.bundleID.lowercased() == needle }
     }
 
     // MARK: - Mutations

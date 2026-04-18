@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionTimer: Timer?
     private var infoResetTask: Task<Void, Never>?
     private var backendSwapTask: Task<Void, Never>?
+    private var appActivationObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ModelStore.migrateV010WhisperLayoutIfNeeded()
@@ -60,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         startFnMonitor()
+        startFrontmostAppTracking()
 
         hotkeyConsumeTask = Task { [weak self] in
             guard let self else { return }
@@ -81,6 +83,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pipelineTask?.cancel()
         backendSwapTask?.cancel()
         permissionTimer?.invalidate()
+        if let obs = appActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+        }
+    }
+
+    // MARK: - Frontmost-app tracking
+
+    /// Keeps `state.lastNonSelfFrontmostBundleID` current, so the Profiles tab's
+    /// "Add frontmost app" can target the real previously-active app — not
+    /// VoiceTyping itself, which becomes frontmost the moment Settings opens.
+    private func startFrontmostAppTracking() {
+        // Seed: VoiceTyping is LSUIElement so whatever is foregrounded right
+        // now is the user's actual workspace. If that's somehow us anyway,
+        // leave the value nil and wait for the next activation.
+        let ours = Bundle.main.bundleIdentifier
+        if let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+           bid != ours {
+            state.lastNonSelfFrontmostBundleID = bid
+        }
+
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notif in
+            guard let self,
+                  let app = notif.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.activationPolicy == .regular,
+                  let bid = app.bundleIdentifier,
+                  bid != Bundle.main.bundleIdentifier else { return }
+            MainActor.assumeIsolated {
+                self.state.lastNonSelfFrontmostBundleID = bid
+            }
+        }
     }
 
     // MARK: - Backend management

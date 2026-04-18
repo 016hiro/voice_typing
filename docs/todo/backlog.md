@@ -21,12 +21,11 @@
 - [ ] **快捷键可配置**：除 Fn 外提供 Right Option / Right Cmd 等替代方案；Settings 窗口加 hotkey picker。
 - [ ] **历史转录记录**：可选保存最近 N 条转录到 Settings → History 标签，支持复制/重新发送。
 
-> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。
+> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。
 
 ## 中期 (v0.4+)
 
 - [ ] ~~**中英自动语种检测**~~：Qwen3-ASR 原生就支持中英混合输入（2026-04-18 实测 zh-CN hint 下混读英文仍转写正确）。保留 Whisper backend 的场景：它 code-switch 弱，仍需要语言选择 UI。v0.4.0 不再拿它做主线。
-- [ ] **per-app 上下文 profile**：v0.3.1 候选。按前台 bundle 注入特定 system prompt 片段（例如 Slack 偏口语、VSCode 偏代码）。
 - [ ] **流式转录**：长录音边录边出文，胶囊实时显示部分结果。Qwen-0.6B 的 92ms TTFT 在这里才真正有用。
 - [ ] **VAD 自动停止**：除 Fn 松开外，检测到长时间静默自动结束录音。
 - [ ] **更多 ASR 后端**：

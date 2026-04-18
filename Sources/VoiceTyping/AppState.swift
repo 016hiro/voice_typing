@@ -63,6 +63,13 @@ final class AppState: ObservableObject {
     /// Bumped when model listings (downloaded/deleted/downloading) change, so menus can refresh.
     @Published var modelInventoryTick: Int = 0
 
+    /// Last app (by bundle ID) other than VoiceTyping that became active in the
+    /// foreground. Maintained by `AppDelegate` via NSWorkspace activation
+    /// notifications — consumed by the Profiles settings tab so
+    /// "Add frontmost app" targets the app the user was dictating into before
+    /// they opened Settings (which would otherwise make VoiceTyping frontmost).
+    @Published var lastNonSelfFrontmostBundleID: String?
+
     init() {
         let ud = UserDefaults.standard
 

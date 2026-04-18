@@ -1390,15 +1390,13 @@ private struct ProfilesTab: View {
     }
 
     private func addFrontmostApp() {
-        // Frontmost is "us" while the Settings window is key; walk through
-        // running apps and grab the first non-VoiceTyping regular app ahead of
-        // us in activation order. Same heuristic the dictation pipeline uses
-        // at stopRecording.
-        let ours = Bundle.main.bundleIdentifier
-        guard let front = NSWorkspace.shared.runningApplications.first(where: {
-            $0.activationPolicy == .regular && $0.bundleIdentifier != ours
-        }), let url = front.bundleURL else {
-            Log.app.warning("Add frontmost app: no eligible running app found")
+        // Opening Settings makes VoiceTyping frontmost, so
+        // `NSWorkspace.frontmostApplication` would return us. AppDelegate
+        // tracks the last non-self activation via NSWorkspace notifications;
+        // read that snapshot.
+        guard let bid = state.lastNonSelfFrontmostBundleID,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) else {
+            Log.app.warning("Add frontmost app: no tracked frontmost app (try using Add… instead)")
             return
         }
         beginDraftForApp(url: url)
