@@ -6,6 +6,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     case models
     case llm
     case dictionary
+    case profiles
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .models:     return "Models"
         case .llm:        return "LLM"
         case .dictionary: return "Dictionary"
+        case .profiles:   return "Profiles"
         }
     }
 
@@ -22,6 +24,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .models:     return "waveform"
         case .llm:        return "sparkles"
         case .dictionary: return "character.book.closed"
+        case .profiles:   return "text.bubble"
         }
     }
 }
@@ -207,6 +210,8 @@ private struct SettingsView: View {
                     LLMTab(state: state)
                 case .dictionary:
                     DictionaryTab(state: state)
+                case .profiles:
+                    ProfilesTab(state: state)
                 }
             }
             .padding(.horizontal, 22)
@@ -1115,5 +1120,351 @@ private struct DictionaryTab: View {
                 Log.app.warning("Dictionary export failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+}
+
+// MARK: - Profiles tab
+
+private struct ProfilesTab: View {
+    @ObservedObject var state: AppState
+
+    @State private var showingEditor = false
+    @State private var editingID: UUID?
+    @State private var draftName: String = ""
+    @State private var draftBundleID: String = ""
+    @State private var draftSnippet: String = ""
+    @State private var draftEnabled: Bool = true
+    @State private var pendingDeleteIDs: Set<UUID> = []
+    @State private var selection: Set<UUID> = []
+
+    private var profiles: [ContextProfile] { state.profiles.profiles }
+
+    private var selectedProfile: ContextProfile? {
+        guard selection.count == 1, let id = selection.first else { return nil }
+        return profiles.first { $0.id == id }
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            SectionCard(title: "Per-App Context Profiles") {
+                Text("Pick an app and add a system prompt snippet. When that app is frontmost at dictation time, the snippet is appended to the refiner's base prompt — before your vocabulary glossary — so the LLM adapts its style (casual for chat, terse for editors, etc). The refiner must be on; profiles never force it back on.")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(LG.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Table(profiles, selection: $selection) {
+                    TableColumn("App") { profile in
+                        HStack(spacing: 8) {
+                            Image(nsImage: ProfilesTab.icon(for: profile.bundleID))
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(width: 18, height: 18)
+                            Text(profile.name)
+                                .font(.body)
+                                .foregroundStyle(profile.enabled ? .primary : .secondary)
+                        }
+                    }
+                    .width(min: 140, ideal: 180)
+
+                    TableColumn("Snippet") { profile in
+                        Text(profile.systemPromptSnippet)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .width(min: 180, ideal: 280)
+
+                    TableColumn("Enabled") { profile in
+                        Toggle("", isOn: Binding(
+                            get: { profile.enabled },
+                            set: { toggleEnabled(profile, to: $0) }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    }
+                    .width(70)
+                }
+                .id(state.profilesTick)
+                .frame(minHeight: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contextMenu(forSelectionType: UUID.self) { ids in
+                    if ids.count == 1, let id = ids.first,
+                       let profile = profiles.first(where: { $0.id == id }) {
+                        Button("Edit…") { beginEdit(profile) }
+                    }
+                    if !ids.isEmpty {
+                        Button("Delete", role: .destructive) {
+                            pendingDeleteIDs = ids
+                        }
+                    }
+                } primaryAction: { ids in
+                    if let id = ids.first, let profile = profiles.first(where: { $0.id == id }) {
+                        beginEdit(profile)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    Button { pickAppFromDisk() } label: {
+                        Label("Add…", systemImage: "plus")
+                    }
+
+                    Button { addFrontmostApp() } label: {
+                        Label("Add frontmost app", systemImage: "rectangle.inset.filled.and.person.filled")
+                    }
+
+                    Button {
+                        if let p = selectedProfile { beginEdit(p) }
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .disabled(selection.count != 1)
+
+                    Button(role: .destructive) {
+                        pendingDeleteIDs = selection
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .disabled(selection.isEmpty)
+
+                    Divider().frame(height: 16)
+
+                    Button { importFromFile() } label: {
+                        Label("Import", systemImage: "square.and.arrow.down")
+                    }
+
+                    Button { exportToFile() } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(profiles.isEmpty)
+
+                    Spacer()
+
+                    Text(String(format: "%d / %d profiles", profiles.count, ContextProfileStore.softCap))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(LG.textFaint)
+                }
+            }
+        }
+        .sheet(isPresented: $showingEditor) {
+            editorSheet
+        }
+        .alert(deleteAlertTitle,
+               isPresented: .init(
+                   get: { !pendingDeleteIDs.isEmpty },
+                   set: { if !$0 { pendingDeleteIDs = [] } }
+               ),
+               presenting: pendingDeleteIDs.isEmpty ? nil : pendingDeleteIDs) { ids in
+            Button("Delete", role: .destructive) {
+                for id in ids { state.removeProfile(id: id) }
+                selection.subtract(ids)
+                pendingDeleteIDs = []
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteIDs = [] }
+        } message: { _ in
+            Text("Removes the profile locally; the app itself is untouched.")
+        }
+    }
+
+    private var deleteAlertTitle: String {
+        pendingDeleteIDs.count > 1
+            ? "Delete \(pendingDeleteIDs.count) profiles?"
+            : "Delete this profile?"
+    }
+
+    // MARK: Editor sheet
+
+    private var editorSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(nsImage: ProfilesTab.icon(for: draftBundleID))
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 32, height: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(editingID == nil ? "New Profile" : "Edit Profile")
+                        .font(.headline)
+                    Text(draftName.isEmpty ? "(unnamed)" : draftName)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            LabeledField(title: "System prompt snippet") {
+                TextEditor(text: $draftSnippet)
+                    .font(.system(size: 13))
+                    .frame(minHeight: 120, maxHeight: 220)
+                    .padding(4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(white: 0, opacity: 0.06))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                    )
+            }
+
+            LabeledField(title: "Display name") {
+                TextField("e.g. Slack", text: $draftName)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Toggle("Enabled", isOn: $draftEnabled)
+
+            Text("Appended to the refiner's base system prompt. Keep it short and imperative — e.g. \"Prefer casual tone; allow contractions and informal phrasing.\"")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Matches bundle \(draftBundleID.isEmpty ? "(none)" : draftBundleID)")
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { showingEditor = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(editingID == nil ? "Add" : "Save") { commitEdit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(
+                        draftBundleID.trimmingCharacters(in: .whitespaces).isEmpty ||
+                        draftSnippet.trimmingCharacters(in: .whitespaces).isEmpty
+                    )
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    // MARK: Actions
+
+    private func toggleEnabled(_ profile: ContextProfile, to newValue: Bool) {
+        var p = profile
+        p.enabled = newValue
+        _ = state.upsertProfile(p)
+    }
+
+    private func beginEdit(_ profile: ContextProfile) {
+        draftName = profile.name
+        draftBundleID = profile.bundleID
+        draftSnippet = profile.systemPromptSnippet
+        draftEnabled = profile.enabled
+        editingID = profile.id
+        showingEditor = true
+    }
+
+    private func beginDraftForApp(url: URL) {
+        let bundle = Bundle(url: url)
+        guard let bid = bundle?.bundleIdentifier else {
+            Log.app.warning("Add profile: no bundle identifier at \(url.path, privacy: .public)")
+            return
+        }
+        // If a profile already exists for this bundleID, open it rather than
+        // duplicating — upsert dedups by bundleID but editing the existing one
+        // preserves id/createdAt and is less surprising to the user.
+        if let existing = profiles.first(where: { $0.bundleID == bid }) {
+            beginEdit(existing)
+            return
+        }
+        let name = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+                ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+                ?? url.deletingPathExtension().lastPathComponent
+        draftName = name
+        draftBundleID = bid
+        draftSnippet = ""
+        draftEnabled = true
+        editingID = nil
+        showingEditor = true
+    }
+
+    private func pickAppFromDisk() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.message = "Pick an app to create a context profile for."
+        if panel.runModal() == .OK, let url = panel.url {
+            beginDraftForApp(url: url)
+        }
+    }
+
+    private func addFrontmostApp() {
+        // Frontmost is "us" while the Settings window is key; walk through
+        // running apps and grab the first non-VoiceTyping regular app ahead of
+        // us in activation order. Same heuristic the dictation pipeline uses
+        // at stopRecording.
+        let ours = Bundle.main.bundleIdentifier
+        guard let front = NSWorkspace.shared.runningApplications.first(where: {
+            $0.activationPolicy == .regular && $0.bundleIdentifier != ours
+        }), let url = front.bundleURL else {
+            Log.app.warning("Add frontmost app: no eligible running app found")
+            return
+        }
+        beginDraftForApp(url: url)
+    }
+
+    private func commitEdit() {
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bid = draftBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let snippet = draftSnippet.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !bid.isEmpty, !snippet.isEmpty else { return }
+
+        let existing = editingID.flatMap { id in profiles.first(where: { $0.id == id }) }
+        let profile = ContextProfile(
+            id: editingID ?? UUID(),
+            name: name.isEmpty ? bid : name,
+            bundleID: bid,
+            systemPromptSnippet: snippet,
+            enabled: draftEnabled,
+            createdAt: existing?.createdAt ?? Date()
+        )
+        _ = state.upsertProfile(profile)
+        showingEditor = false
+    }
+
+    // MARK: Import / Export
+
+    private func importFromFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a profiles JSON file to import."
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try Data(contentsOf: url)
+                try state.profiles.importJSON(data)
+                state.profilesTick &+= 1
+            } catch {
+                Log.app.warning("Profiles import failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func exportToFile() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "voicetyping-profiles.json"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let data = try state.profiles.exportJSON()
+                try data.write(to: url, options: .atomic)
+            } catch {
+                Log.app.warning("Profiles export failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    // MARK: Helpers
+
+    /// Live-resolve an app icon by bundle ID. If the bundle isn't installed,
+    /// return the generic application icon so the row still has something to
+    /// anchor the label against.
+    static func icon(for bundleID: String) -> NSImage {
+        if !bundleID.isEmpty,
+           let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSWorkspace.shared.icon(for: .application)
     }
 }
