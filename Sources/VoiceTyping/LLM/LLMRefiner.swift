@@ -9,8 +9,10 @@ final class LLMRefiner: Sendable {
     }
 
     /// Refines `text` using the given `mode`. Optional `glossary` is a pre-formatted
-    /// Markdown block from `GlossaryBuilder.buildLLMGlossary` that gets appended
-    /// after the mode's system prompt.
+    /// Markdown block from `GlossaryBuilder.buildLLMGlossary`; optional
+    /// `profileSnippet` is a per-app override pulled from `ContextProfileStore`.
+    /// Both, when present, are appended to the mode's system prompt in the order
+    /// `baseline → profile → glossary` (most general to most specific).
     ///
     /// On any failure (network, timeout, auth, decode), returns the original input
     /// unchanged — matching v0.1+ fail-open behavior.
@@ -18,13 +20,18 @@ final class LLMRefiner: Sendable {
                 language: Language,
                 mode: RefineMode,
                 glossary: String? = nil,
+                profileSnippet: String? = nil,
                 config: LLMConfig) async -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
         guard let systemPrompt = mode.systemPrompt else { return text }    // .off
         guard config.hasCredentials else { return text }
 
-        let finalSystem = Self.compose(systemPrompt: systemPrompt, glossary: glossary)
+        let finalSystem = Self.compose(
+            systemPrompt: systemPrompt,
+            profileSnippet: profileSnippet,
+            glossary: glossary
+        )
 
         do {
             let reply = try await chat(
@@ -41,9 +48,18 @@ final class LLMRefiner: Sendable {
         }
     }
 
-    private static func compose(systemPrompt: String, glossary: String?) -> String {
-        guard let glossary, !glossary.isEmpty else { return systemPrompt }
-        return systemPrompt + "\n\n" + glossary
+    private static func compose(systemPrompt: String,
+                                profileSnippet: String?,
+                                glossary: String?) -> String {
+        var parts: [String] = [systemPrompt]
+        if let snippet = profileSnippet?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !snippet.isEmpty {
+            parts.append(snippet)
+        }
+        if let glossary, !glossary.isEmpty {
+            parts.append(glossary)
+        }
+        return parts.joined(separator: "\n\n")
     }
 
     /// Sends a tiny test message to confirm credentials work.

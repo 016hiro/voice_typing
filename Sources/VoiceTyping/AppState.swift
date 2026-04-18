@@ -44,6 +44,14 @@ final class AppState: ObservableObject {
     /// Bumped whenever dictionary entries change; used by SwiftUI views to re-render.
     @Published var dictionaryTick: Int = 0
 
+    /// v0.3.1 per-app context profiles. Mutate via the `upsertProfile` /
+    /// `removeProfile` / `replaceProfiles` methods below so persistence and
+    /// `profilesTick` stay in sync (same pattern as the dictionary).
+    let profiles = ContextProfileStore()
+
+    /// Bumped whenever profile entries change; drives SwiftUI refresh in Settings.
+    @Published var profilesTick: Int = 0
+
     @Published var asrBackend: ASRBackend {
         didSet { UserDefaults.standard.set(asrBackend.rawValue, forKey: "asrBackend") }
     }
@@ -110,6 +118,25 @@ final class AppState: ObservableObject {
         dictionary.updateLastMatched(ids: ids)
         // Intentionally don't bump dictionaryTick — UI doesn't need to re-render
         // when only `lastMatchedAt` changes (not user-visible).
+    }
+
+    // MARK: - Profile mutations
+
+    @discardableResult
+    func upsertProfile(_ profile: ContextProfile) -> Bool {
+        let ok = profiles.upsert(profile)
+        if ok { profilesTick &+= 1 }
+        return ok
+    }
+
+    func removeProfile(id: UUID) {
+        profiles.remove(id: id)
+        profilesTick &+= 1
+    }
+
+    func replaceProfiles(_ new: [ContextProfile]) {
+        profiles.replaceAll(new)
+        profilesTick &+= 1
     }
 
     var labelTextForCapsule: String {

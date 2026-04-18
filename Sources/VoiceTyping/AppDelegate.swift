@@ -247,10 +247,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rawFirst = state.rawFirstEnabled
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let asrContext = GlossaryBuilder.buildForASR(backend, entries: dictEntries, language: language)
+        let profile = state.profiles.lookup(bundleID: frontmostBundleID)
+        let profileSnippet = profile?.systemPromptSnippet
         if let ctx = asrContext {
             Log.app.info("ASR bias: backend=\(backend.rawValue, privacy: .public) entries=\(dictEntries.count, privacy: .public) context=\(ctx, privacy: .public)")
         } else {
             Log.app.info("ASR bias: none (entries=\(dictEntries.count, privacy: .public), backend=\(backend.rawValue, privacy: .public))")
+        }
+        if let profile {
+            Log.app.info("Context profile: \(profile.name, privacy: .public) (bundle=\(profile.bundleID, privacy: .public))")
         }
 
         let tracker = LatencyTracker()
@@ -298,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     llmConfig: llmConfig,
                     backend: backend,
                     bundleID: frontmostBundleID,
+                    profileSnippet: profileSnippet,
                     tracker: tracker
                 )
             } else {
@@ -309,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     dictEntries: dictEntries,
                     llmConfig: llmConfig,
                     backend: backend,
+                    profileSnippet: profileSnippet,
                     tracker: tracker
                 )
             }
@@ -324,6 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dictEntries: [DictionaryEntry],
         llmConfig: LLMConfig,
         backend: ASRBackend,
+        profileSnippet: String?,
         tracker: LatencyTracker
     ) async {
         var finalText = raw
@@ -339,6 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 language: language,
                 mode: mode,
                 glossary: glossary,
+                profileSnippet: profileSnippet,
                 config: llmConfig
             )
             tracker.mark(.llmEnd)
@@ -376,6 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         llmConfig: LLMConfig,
         backend: ASRBackend,
         bundleID: String?,
+        profileSnippet: String?,
         tracker: LatencyTracker
     ) async {
         // Step 1: paste raw immediately.
@@ -397,6 +407,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             language: language,
             mode: mode,
             glossary: glossary,
+            profileSnippet: profileSnippet,
             config: llmConfig
         )
         tracker.mark(.llmEnd)
