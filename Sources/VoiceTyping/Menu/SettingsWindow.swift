@@ -32,11 +32,46 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
 /// stay consistent. The outer window is larger than the panel so the glass
 /// shadow has transparent space to spread into.
 private enum Panel {
-    static let width: CGFloat = 640
-    static let height: CGFloat = 560
-    static let cornerRadius: CGFloat = 22
+    static let width: CGFloat = 760
+    static let height: CGFloat = 600
+    static let cornerRadius: CGFloat = 28
     /// Breathing room around the panel for the soft shadow.
     static let shadowMargin: CGFloat = 28
+}
+
+// Palette pulled verbatim from the Liquid Glass design handoff. Every text
+// style that's explicit in the CSS (--text-*, --text-chip-*, etc.) has a
+// matching constant here so the Swift UI doesn't drift into SwiftUI's
+// `.primary` / `.secondary` defaults (which skew grey, not cool-white).
+private enum LG {
+    // Text — by role
+    static let text       = Color.white                                         // #ffffff
+    static let textDim    = Color(red: 0xE9/255, green: 0xEB/255, blue: 0xF4/255) // #e9ebf4
+    static let textFaint  = Color(red: 0xB9/255, green: 0xBC/255, blue: 0xCB/255) // #b9bccb
+    static let textDark   = Color(red: 0x15/255, green: 0x15/255, blue: 0x1B/255) // #15151b
+    static let chipVal    = Color(red: 177/255, green: 134/255, blue: 93/255)     // #B1865D
+    static let chipMute   = Color(red: 120/255, green: 214/255, blue: 226/255)    // #78D6E2
+
+    // States
+    static let activeBg   = Color(red: 0x6A/255, green: 0xF0/255, blue: 0xA5/255) // #6af0a5
+    static let activeBgHi = Color(red: 0x9C/255, green: 0xFB/255, blue: 0xC4/255)
+    static let activeText = Color(red: 0x0C/255, green: 0x23/255, blue: 0x13/255) // #0c2313
+    static let rowSelBg   = Color(red: 0x7A/255, green: 0xA0/255, blue: 0xFF/255) // #7aa0ff
+}
+
+/// The design's `.fx` class applies a 3-layer text-shadow to every character
+/// — a crisp 1px dark outline plus two soft drops. Reduced here to a 2-layer
+/// stack which reads cleanly at macOS rendering without the CSS's "crunch".
+private extension View {
+    func fx() -> some View {
+        self
+            .shadow(color: .black.opacity(0.55), radius: 1, x: 0, y: 1)
+            .shadow(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+    }
+    /// Inverse — a light halo for dark text sitting on a bright pill.
+    func fxDark() -> some View {
+        self.shadow(color: .white.opacity(0.7), radius: 1, x: 0, y: 1)
+    }
 }
 
 // MARK: - Window controller
@@ -139,7 +174,24 @@ private struct SettingsView: View {
         panelContent
             .frame(width: Panel.width, height: Panel.height)
             .panelSurface(cornerRadius: Panel.cornerRadius)
-            .shadow(color: .black.opacity(0.22), radius: 22, x: 0, y: 12)
+            // Top specular + bottom refraction rim echoing the Liquid Glass
+            // design's ::before / ::after pseudo-elements.
+            .overlay(
+                RoundedRectangle(cornerRadius: Panel.cornerRadius, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.45),
+                                Color.white.opacity(0.08),
+                                Color.white.opacity(0.14),
+                            ],
+                            startPoint: .top, endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: .black.opacity(0.35), radius: 24, x: 0, y: 14)
+            .shadow(color: .black.opacity(0.25), radius: 6,  x: 0, y: 2)
     }
 
     private var panelContent: some View {
@@ -193,21 +245,38 @@ private extension View {
     }
 }
 
-/// Done is the single emphasized control — neutral Liquid Glass (no tint),
-/// relying on material density + Return/Escape keyboard shortcut for primacy.
+/// Done is the single emphasized control — dark-glass pill with white text,
+/// matching the design's `.btn.dark` footer button. Return/Escape still fire it.
 private struct DoneButton: View {
     let action: () -> Void
 
     var body: some View {
-        if #available(macOS 26.0, *) {
-            Button("Done", action: action)
-                .buttonStyle(.glass)
-                .controlSize(.large)
-        } else {
-            Button("Done", action: action)
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+        Button(action: action) {
+            Text("Done")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(LG.text)
+                .fx()
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .background(
+                    LinearGradient(
+                        colors: [Color.black.opacity(0.55), Color.black.opacity(0.35)],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    in: Capsule()
+                )
+                .overlay(
+                    Capsule().strokeBorder(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.35), Color.white.opacity(0.08)],
+                            startPoint: .top, endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+                )
+                .shadow(color: .black.opacity(0.35), radius: 8, y: 4)
         }
+        .buttonStyle(.plain)
     }
 }
 
@@ -215,72 +284,86 @@ private struct DoneButton: View {
 
 private struct TabPills: View {
     @Binding var selected: SettingsTab
-    @Namespace private var pillAnimation
 
     var body: some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: 4) {
-                pillsRow
-                    .padding(4)
-            }
-        } else {
-            pillsRow
-                .padding(4)
-                .background(
-                    Capsule().fill(Color.primary.opacity(0.06))
-                )
-        }
-    }
-
-    private var pillsRow: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 14) {
             ForEach(SettingsTab.allCases) { tab in
                 pill(for: tab)
             }
         }
+        .padding(5)
+        // Matches the design's .tabs: dark-tinted glass with a white→white-fade
+        // gradient on top and an inset highlight ring. One container, not
+        // one-per-pill — unselected pills read as text on this glass.
+        .background(
+            ZStack {
+                Capsule().fill(Color.black.opacity(0.22))
+                Capsule().fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+            }
+        )
+        .overlay(
+            Capsule().strokeBorder(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.50), Color.white.opacity(0.14)],
+                    startPoint: .top, endPoint: .bottom
+                ),
+                lineWidth: 1
+            )
+        )
+        .shadow(color: .black.opacity(0.35), radius: 10, y: 6)
     }
 
     @ViewBuilder
     private func pill(for tab: SettingsTab) -> some View {
         let isSelected = selected == tab
         Button {
-            withAnimation(.smooth(duration: 0.25)) {
-                selected = tab
-            }
+            selected = tab
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 Image(systemName: tab.systemImage)
                     .imageScale(.small)
+                    .font(.system(size: 13, weight: .semibold))
                 Text(tab.title)
+                    .font(.system(size: 14, weight: .semibold))
             }
-            .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
-            .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.7))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .pillSurface(selected: isSelected)
+            .foregroundStyle(isSelected ? LG.textDark : LG.text)
+            .modifier(TabLabelShadow(selected: isSelected))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
+            .background(selectedBackground.opacity(isSelected ? 1 : 0))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
     }
+
+    /// Selected pill backing — bright white gradient capsule with a crisp
+    /// inner ring and a soft drop, matching `.tab[aria-selected="true"]`.
+    private var selectedBackground: some View {
+        Capsule()
+            .fill(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.95), Color(white: 0.92, opacity: 0.88)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.95), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.25), radius: 6, y: 3)
+    }
 }
 
-private extension View {
-    /// Neutral differentiation: selected = thicker material (denser glass
-    /// against the outer panel), unselected = interactive regular glass.
-    /// Text weight/opacity carries most of the signal; the capsule is just
-    /// a subtle backing. No accent color — tinted glass inside a
-    /// `GlassEffectContainer` bleeds a halo outside the capsule shape.
-    @ViewBuilder
-    func pillSurface(selected: Bool) -> some View {
+/// Selected = inverse (light halo on dark text); unselected = stroke on light text.
+private struct TabLabelShadow: ViewModifier {
+    let selected: Bool
+    func body(content: Content) -> some View {
         if selected {
-            self.background(
-                .thickMaterial,
-                in: Capsule()
-            )
-        } else if #available(macOS 26.0, *) {
-            self.glassEffect(.regular.interactive(), in: .capsule)
+            content.fxDark()
         } else {
-            self.background(Color.clear, in: Capsule())
+            content.fx()
         }
     }
 }
@@ -299,21 +382,32 @@ private struct SectionCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             if let title {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.9))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(LG.text)
+                    .fx()
             }
             content()
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            Color.primary.opacity(0.05),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            LinearGradient(
+                colors: [Color.white.opacity(0.10), Color.white.opacity(0.03)],
+                startPoint: .top, endPoint: .bottom
+            ),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.35), Color.white.opacity(0.08)],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
         )
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
     }
 }
 
@@ -324,25 +418,54 @@ private struct RefineModeSegmented: View {
     @Binding var selected: RefineMode
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 10) {
             ForEach(RefineMode.allCases) { mode in
                 let isSelected = selected == mode
                 Button {
-                    withAnimation(.smooth(duration: 0.22)) {
-                        selected = mode
-                    }
+                    selected = mode
                 } label: {
                     Text(mode.displayName)
-                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
-                        .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.7))
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(isSelected ? LG.textDark : LG.text)
+                        .modifier(TabLabelShadow(selected: isSelected))
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, 11)
                         .frame(maxWidth: .infinity)
-                        .pillSurface(selected: isSelected)
-                        .contentShape(Capsule())
+                        .background(segBackground(selected: isSelected))
+                        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func segBackground(selected: Bool) -> some View {
+        if selected {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.92), Color(white: 0.92, opacity: 0.82)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.9), lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(0.22), radius: 6, y: 3)
+        } else {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+                )
         }
     }
 }
@@ -355,10 +478,11 @@ private struct LabeledField<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(LG.text)
+                .fx()
             content()
         }
     }
@@ -391,8 +515,8 @@ private struct ModelsTab: View {
                 }
 
                 Text("Downloads are cached under `~/Library/Application Support/VoiceTyping/models/` and kept until you delete them.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(LG.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -439,20 +563,36 @@ private struct ModelRow: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(backend.displayName).bold()
+                HStack(spacing: 8) {
+                    Text(backend.displayName)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(LG.text)
+                        .fx()
                     if backend == state.asrBackend {
                         Text("ACTIVE")
-                            .font(.caption2).bold()
-                            .foregroundStyle(.primary)
+                            .font(.system(size: 10, weight: .heavy))
+                            .tracking(1.2)
+                            .foregroundStyle(LG.activeText)
+                            .fxDark()
                             .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(.thickMaterial, in: Capsule())
+                            .padding(.vertical, 3)
+                            .background(
+                                LinearGradient(
+                                    colors: [LG.activeBgHi, LG.activeBg],
+                                    startPoint: .top, endPoint: .bottom
+                                ),
+                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(Color.white.opacity(0.6), lineWidth: 0.5)
+                            )
+                            .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
                     }
                 }
                 Text(statusLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(LG.textFaint)
             }
 
             Spacer()
@@ -534,17 +674,19 @@ private struct LLMTab: View {
                 RefineModeSegmented(selected: $state.refineMode)
 
                 Text(state.refineMode.shortDescription)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(LG.textDim)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Toggle(isOn: $state.rawFirstEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text("Paste raw first, refine in background")
-                            .font(.system(size: 13))
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(LG.text)
+                            .fx()
                         Text("Lower perceived latency. Avoid in chat apps that auto-send on Enter.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(LG.textDim)
                     }
                 }
                 .disabled(state.refineMode == .off)
@@ -695,8 +837,8 @@ private struct DictionaryTab: View {
         VStack(spacing: 14) {
             SectionCard(title: "Custom Vocabulary") {
                 Text("Terms injected into ASR and the LLM refiner so your jargon, names, and product terms survive transcription. What gets injected each call depends on recency and the backend's token budget.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(LG.textDim)
                     .fixedSize(horizontal: false, vertical: true)
 
                 injectionStatus
@@ -777,8 +919,8 @@ private struct DictionaryTab: View {
                     Spacer()
 
                     Text(String(format: "%d / %d entries", state.dictionary.entries.count, CustomDictionary.softEntryCap))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(LG.textFaint)
                 }
             }
         }
@@ -827,22 +969,40 @@ private struct DictionaryTab: View {
     private func statusPill(title: String, report: GlossaryBuilder.InjectionReport) -> some View {
         let pct = report.budget > 0 ? Double(report.tokens) / Double(report.budget) : 0
         let tight = pct > 0.85
-        return HStack(spacing: 6) {
+        return HStack(spacing: 8) {
             Text(title)
-                .font(.caption2).bold()
-                .foregroundStyle(.secondary)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(LG.text)
+                .fx()
             Text("\(report.injected)/\(report.total)")
-                .font(.caption)
-            Text("·")
-                .foregroundStyle(.tertiary)
-            Text("\(report.tokens)/\(report.budget)t")
-                .font(.caption)
-                .foregroundStyle(tight ? .orange : .secondary)
+                .font(.system(size: 12.5, weight: .bold))
+                .foregroundStyle(LG.text)
+                .fx()
+            Circle()
+                .fill(Color.white.opacity(0.5))
+                .frame(width: 4, height: 4)
+            // Tokens (warm tan) / budget + "t" suffix (cool cyan). When we're
+            // tight on budget, the token count flips to orange to flag it.
+            (
+                Text("\(report.tokens)")
+                    .foregroundStyle(tight ? .orange : LG.chipVal)
+                +
+                Text("/\(report.budget)t")
+                    .foregroundStyle(LG.chipMute)
+            )
+            .font(.system(size: 11.5, weight: .medium))
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.05), in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.06), lineWidth: 0.5))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            LinearGradient(
+                colors: [Color.white.opacity(0.22), Color.white.opacity(0.06)],
+                startPoint: .top, endPoint: .bottom
+            ),
+            in: Capsule()
+        )
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
     }
 
     // MARK: Editor sheet

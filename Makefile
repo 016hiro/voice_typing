@@ -5,14 +5,15 @@ PAYLOAD := build/$(BUNDLE)
 MLX_METALLIB_SCRIPT := .build/checkouts/speech-swift/scripts/build_mlx_metallib.sh
 MLX_METALLIB := .build/release/mlx.metallib
 
-.PHONY: build run install clean debug metallib setup-metal
+.PHONY: build run install clean debug metallib setup-metal icons
 
-build: metallib
+build: metallib icons
 	swift build -c release --arch arm64
 	rm -rf $(PAYLOAD)
 	mkdir -p $(PAYLOAD)/Contents/MacOS $(PAYLOAD)/Contents/Resources
 	cp $(BIN) $(PAYLOAD)/Contents/MacOS/$(APP)
 	cp Resources/Info.plist $(PAYLOAD)/Contents/Info.plist
+	cp Resources/AppIcon.icns $(PAYLOAD)/Contents/Resources/AppIcon.icns
 	# Copy SwiftPM-produced resource bundles (WhisperKit shaders, HuggingFace tokenizer bundles, etc.)
 	@for b in .build/release/*.bundle; do \
 	  if [ -e "$$b" ]; then cp -R "$$b" $(PAYLOAD)/Contents/Resources/; fi; \
@@ -42,6 +43,13 @@ metallib:
 	  BUILD_DIR=$$(pwd)/.build bash $(MLX_METALLIB_SCRIPT) release || \
 	    echo "  [warn] metallib compile failed — run 'make setup-metal' if Metal Toolchain is missing."; \
 	fi
+
+# Regenerates 10 master PNGs in Resources/icons/ and rebuilds
+# Resources/AppIcon.icns from the active design (default: 02 waveform).
+# Override with e.g. `make icons ICON=05`.
+ICON ?= 02
+icons:
+	swift Scripts/generate_icons.swift $(ICON)
 
 # One-time: install Apple's Metal Toolchain. Needed to compile MLX shaders.
 # If this fails with DVTPlugInLoading errors, you may need to run

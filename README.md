@@ -10,7 +10,8 @@ A macOS menu-bar voice input app. Hold **Fn** to dictate, release to paste the t
 - Four-level LLM refinement (OpenAI-compatible API): `off` / `conservative` (default, fix misrecognitions only) / `light` (also removes fillers & stutters) / `aggressive` (also formats lists & lightly polishes wording). Fails soft — never loses text.
 - **Custom dictionary** with dual-layer injection: term-only entries anchor ASR spelling (Qwen context + Whisper prompt), `term + pronunciations` entries also produce rewrite rules in the LLM glossary. LRU-ranked, token-budgeted, persisted to JSON.
 - Optional **Raw-first inject** mode: pastes raw ASR instantly, then replaces with refined text once the LLM returns (only if the user hasn't moved on). Trades a visible flicker for lower perceived latency.
-- Frameless capsule HUD with real-time RMS-driven 5-bar waveform.
+- Transparent A10 Morse-rhythm HUD — seven staggered bars pulsing beside a monospace label ("Listening" / "Transcribing" / "Refining"), dual-halo shadow so it reads over any background.
+- Original app icon family — 10 macOS-style designs generated from `Scripts/generate_icons.swift`; swap the active design with `make icons ICON=NN && make build`.
 - Pasteboard + Cmd+V injection with CJK IME detection and temporary switch to ASCII.
 - Menu-bar only (LSUIElement, no Dock icon).
 

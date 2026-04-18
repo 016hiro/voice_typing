@@ -4,18 +4,18 @@ import SwiftUI
 final class CapsuleWindow: NSPanel {
 
     private let state: AppState
-    private let effectView: NSVisualEffectView
+    private let container: NSView
     private var hostingView: NSHostingView<CapsuleView>!
     private var currentLevels: AsyncStream<Float>?
-    private var lastContentSize: CGSize = CGSize(width: 220, height: 56)
+    private var lastContentSize: CGSize = CGSize(width: 260, height: 60)
 
     init(state: AppState) {
         self.state = state
-        let effect = NSVisualEffectView()
-        self.effectView = effect
+        let container = NSView()
+        self.container = container
 
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 220, height: 56),
+            contentRect: NSRect(x: 0, y: 0, width: 260, height: 60),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -25,21 +25,16 @@ final class CapsuleWindow: NSPanel {
         self.level = .statusBar
         self.backgroundColor = .clear
         self.isOpaque = false
-        self.hasShadow = true
+        self.hasShadow = false
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         self.isMovable = false
         self.hidesOnDeactivate = false
         self.isReleasedWhenClosed = false
 
-        effect.material = .hudWindow
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.translatesAutoresizingMaskIntoConstraints = false
-        // .hudWindow material ignores layer.cornerRadius cleanly — use a
-        // stretchable rounded mask image so the blur is shaped to a true capsule.
-        effect.maskImage = Self.capsuleMaskImage(radius: 28)
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.clear.cgColor
 
-        self.contentView = effect
+        self.contentView = container
 
         buildHostingView()
     }
@@ -89,19 +84,19 @@ final class CapsuleWindow: NSPanel {
             self?.applyContentSize(size)
         }))
         host.translatesAutoresizingMaskIntoConstraints = false
-        effectView.addSubview(host)
+        container.addSubview(host)
         NSLayoutConstraint.activate([
-            host.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
-            host.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
-            host.topAnchor.constraint(equalTo: effectView.topAnchor),
-            host.bottomAnchor.constraint(equalTo: effectView.bottomAnchor),
+            host.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            host.topAnchor.constraint(equalTo: container.topAnchor),
+            host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         self.hostingView = host
     }
 
     private func applyContentSize(_ size: CGSize) {
-        let w = max(160, min(560, size.width))
-        let h = size.height > 0 ? size.height : 56
+        let w = max(200, min(640, size.width))
+        let h = size.height > 0 ? size.height : 60
         let newSize = CGSize(width: w, height: h)
         if abs(newSize.width - lastContentSize.width) < 0.5 &&
            abs(newSize.height - lastContentSize.height) < 0.5 {
@@ -129,16 +124,4 @@ final class CapsuleWindow: NSPanel {
         return CGPoint(x: x, y: y)
     }
 
-    private static func capsuleMaskImage(radius: CGFloat) -> NSImage {
-        let edge = ceil(radius * 2 + 1)
-        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
-            let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
-            NSColor.black.setFill()
-            path.fill()
-            return true
-        }
-        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
-        image.resizingMode = .stretch
-        return image
-    }
 }

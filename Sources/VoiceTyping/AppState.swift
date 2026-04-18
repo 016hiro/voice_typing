@@ -115,33 +115,13 @@ final class AppState: ObservableObject {
     var labelTextForCapsule: String {
         switch status {
         case .idle, .recording:
-            return capsuleText.isEmpty ? placeholderForLanguage() : capsuleText
+            return capsuleText.isEmpty ? "Listening" : capsuleText
         case .transcribing:
-            return capsuleText.isEmpty ? transcribingLabel() : capsuleText
+            return capsuleText.isEmpty ? "Transcribing" : capsuleText
         case .refining:
-            return "Refining…"
+            return "Refining"
         case .info(let msg):
             return msg
-        }
-    }
-
-    private func placeholderForLanguage() -> String {
-        switch language {
-        case .en:   return "Listening…"
-        case .zhCN: return "聆听中…"
-        case .zhTW: return "聆聽中…"
-        case .ja:   return "聞き取り中…"
-        case .ko:   return "듣고 있습니다…"
-        }
-    }
-
-    private func transcribingLabel() -> String {
-        switch language {
-        case .en:   return "Transcribing…"
-        case .zhCN: return "转写中…"
-        case .zhTW: return "轉寫中…"
-        case .ja:   return "変換中…"
-        case .ko:   return "변환 중…"
         }
     }
 }
