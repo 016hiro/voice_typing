@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift-build:
+    # macos-14 is arm64 (Apple Silicon). Public repos get this runner free.
+    # Debug build only: we don't install Metal Toolchain in CI, and we don't
+    # compile the MLX metallib here. Goal is a compile smoke test — catch
+    # obvious breakage (missing imports, syntax errors, Swift 6 concurrency
+    # regressions) before landing on main. Actual release artifacts are
+    # built locally via `make build`.
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Cache SwiftPM packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            .build/checkouts
+            .build/repositories
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: swift build -c debug
+        run: swift build -c debug --arch arm64

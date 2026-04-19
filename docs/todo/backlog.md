@@ -12,22 +12,22 @@
 
 ### 开发流程
 
-- [ ] **稳定签名（解决 TCC 重新授权问题）**：`make setup-cert` 创建本地自签名证书 → `make build` 用它签名。这样 cdhash 跨重建稳定，TCC 授权不丢。详见 devlog v0.1.0 issue 7。
-- [ ] **`make reset-perms` target**：`tccutil reset Accessibility com.voicetyping.app && tccutil reset Microphone com.voicetyping.app`，开发期一键重置。
-- [ ] **CI 检查**：GitHub Actions 跑 `swift build` + `swift test`（目前还没单元测试）。
+- [x] ~~**稳定签名（解决 TCC 重新授权问题）**：`make setup-cert` 创建本地自签名证书 → `make build` 用它签名。这样 cdhash 跨重建稳定，TCC 授权不丢。~~ 已在 v0.4.1 落地，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。
+- [x] ~~**`make reset-perms` target**~~ 已在 v0.4.1 落地。
+- [x] ~~**CI 检查**：GitHub Actions 跑 `swift build`~~ 已在 v0.4.1 落地（`swift build -c debug` smoke；`swift test` 等有了 test 套件再加）。
 
 ### 功能扩展
 
 - [ ] **快捷键可配置**：除 Fn 外提供 Right Option / Right Cmd 等替代方案；Settings 窗口加 hotkey picker。
 - [ ] **历史转录记录**：可选保存最近 N 条转录到 Settings → History 标签，支持复制/重新发送。
 
-> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。
+> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。
 
 ## 中期 (v0.4+)
 
 - [ ] ~~**中英自动语种检测**~~：Qwen3-ASR 原生就支持中英混合输入（2026-04-18 实测 zh-CN hint 下混读英文仍转写正确）。保留 Whisper backend 的场景：它 code-switch 弱，仍需要语言选择 UI。v0.4.0 不再拿它做主线。
-- [ ] **流式转录**：长录音边录边出文，胶囊实时显示部分结果。Qwen-0.6B 的 92ms TTFT 在这里才真正有用。
-- [ ] **VAD 自动停止**：除 Fn 松开外，检测到长时间静默自动结束录音。
+- [ ] **流式转录**（v0.4.0 旗舰候选）：长录音边录边出文，胶囊实时显示部分结果。Qwen-0.6B 的 92ms TTFT 在这里才真正有用。上游 `soniqo/speech-swift` 0.0.9 已有 `StreamingASR` + 内置 Silero VAD（`AsyncThrowingStream<TranscriptionSegment>`）；真实时得直接用底层 `StreamingVADProcessor` + `Qwen3ASRModel.transcribe` 自己拼 live mic → VAD → ASR 的胶水。
+- [ ] **VAD 自动停止**（流式副产品）：除 Fn 松开外，检测到长时间静默自动结束录音。
 - [ ] **更多 ASR 后端**：
   - whisper.cpp 实现（Intel Mac 支持 + 量化模型选项）
   - Apple SFSpeechRecognizer 实现（无依赖、零下载、低延迟，但中英混杂效果差）
@@ -50,6 +50,17 @@
 - [ ] **未配 API key 时的 UI 提示**：refine mode 非 off 但 credentials 为空时，在 LLM tab / 胶囊显示 "API key missing — pronunciation rewrites won't work"。
 - [ ] **v0.3.0 端到端验证矩阵**：4 × RefineMode × 20 条中英输入盲测打分；Raw-first 三分支；budget 边界；JSON 外编辑 + 重启；导入导出 roundtrip。详见 [v0.3.0.md](v0.3.0.md) 验证段。
 
+## v0.3.2 review / v0.4.1 遗留（Step 2 收）
+
+以下在 v0.4.1 评估过、**明确不做**的项，留给 v0.4.0 streaming（Step 2）或后续 patch release：
+
+- [ ] **Dictionary/Profiles Table `.id(xxxTick)` rebuild 吃 scroll/selection**：每次 tick bump 整个 NSTableView 重建，丢滚动位置和选中状态。改为让 store 发布 `@Published var snapshot: [T]` 避免重建。
+- [ ] **Raw-first 的 ⌘Z 会撤销用户中间键入**：raw paste 后、refined 还没回来时用户手动打了字，replace-injection 的 ⌘Z 撤销的是用户打字。需要检测 intra-app edits（timestamp / clipboard 对比）。
+- [ ] **模型下载中切 backend 不取消网络请求**：`backendSwapTask?.cancel()` 只取消 Task，HuggingFace snapshot 不响应 `Task.isCancelled`。下载继续，结果被丢弃。
+- [ ] **FnHotkeyMonitor 的 event tap 权限撤销检测**：tap 被 OS `tapDisabledByTimeout` 时会自动 re-enable，但 Accessibility 权限被撤销时 tap create 成功但 callback 不触发。需要定期 sanity check。
+- [ ] **未配 API key 时的 UI 提示**：refine mode 非 off 但 credentials 为空时，LLM tab 或胶囊显示 "API key missing"。v0.4.1 的 Keychain 迁移把这块的 UX 边缘情况放大了（迁移失败 alert "Later" 之后会静默 fail-open）。
+- [ ] **LLMRefiner 共享 URLSession**：v0.4.1 评估砍掉（无 delegate 不漏 session、keep-alive 收益小）。若将来实测 Raw-first 下 replace 延迟明显再做。
+
 ## 已知 Bug（待修）
 
-- 暂无已知未修 bug。所有 v0.1.0/v0.2.0/v0.3.0 期间发现的 bug 已修复，详见各 devlog。
+- 暂无已知未修 bug。所有 v0.1.0–v0.4.1 期间发现的 bug 已修复，详见各 devlog。

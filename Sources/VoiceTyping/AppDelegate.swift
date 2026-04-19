@@ -74,6 +74,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Construct and prepare the initial backend.
         activateBackend(state.asrBackend, forceReload: true)
+
+        // If `main.swift`'s migration step failed to write the extracted
+        // API key into Keychain (rare — only on truly degraded Keychain
+        // state), tell the user now so they can re-enter the key. The
+        // plaintext has already been cleared from UserDefaults either
+        // way, so `state.llmConfig.apiKey` is empty at this point.
+        if let failure = LLMConfigStore.migrationFailure {
+            showAPIKeyMigrationFailureAlert(reason: failure)
+        }
+    }
+
+    private func showAPIKeyMigrationFailureAlert(reason: String) {
+        let alert = NSAlert()
+        alert.messageText = "API key couldn't be migrated"
+        alert.informativeText = """
+        VoiceTyping tried to move your OpenAI-compatible API key from its v0.3 \
+        storage into the macOS Keychain, but the Keychain write failed:
+
+        \(reason)
+
+        The old plaintext copy has been removed. Please re-enter your API key \
+        in Settings → LLM.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open Settings")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            statusController.openSettings(tab: .llm)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

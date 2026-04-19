@@ -28,11 +28,16 @@ A macOS menu-bar voice input app. Hold **Fn** to dictate, release to paste the t
 make setup-metal  # ONE TIME: install Apple's Metal Toolchain (needed for Qwen MLX backends).
                   # If this fails with "DVTPlugInLoading" errors, run
                   # `sudo xcodebuild -runFirstLaunch` first, then retry.
+make setup-cert   # ONE TIME: create a local self-signed codesigning identity so
+                  # rebuilds keep the same cdhash — macOS TCC grants (Microphone,
+                  # Accessibility) then persist instead of being reset each build.
+                  # Safe to skip; without it `make build` falls back to ad-hoc sign.
 make build        # builds signed .app bundle into ./build/VoiceTyping.app
                   # compiles MLX shaders → mlx.metallib → embedded in Contents/MacOS/
 make run          # build + launch
 make install      # copies to /Applications
 make clean
+make reset-perms  # dev: tccutil reset Microphone + Accessibility for this bundle
 ```
 
 On first launch, grant **Microphone** and **Accessibility** permissions when prompted. The default ASR model downloads in the background; progress shown in the menu bar. You can switch models anytime via the menu — cached models don't re-download.

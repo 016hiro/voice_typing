@@ -5,7 +5,17 @@ PAYLOAD := build/$(BUNDLE)
 MLX_METALLIB_SCRIPT := .build/checkouts/speech-swift/scripts/build_mlx_metallib.sh
 MLX_METALLIB := .build/release/mlx.metallib
 
-.PHONY: build run install clean debug metallib setup-metal icons
+# Stable codesigning identity — created by `make setup-cert`. If present,
+# `make build` signs with it (stable cdhash → TCC grants persist across
+# rebuilds). If absent, falls back to ad-hoc sign (old behavior; TCC must
+# be re-granted every build).
+SIGNING_IDENTITY ?= VoiceTyping Dev
+# Drop -v: the local self-signed cert reports CSSMERR_TP_NOT_TRUSTED and -v
+# filters it out, but codesign can still use it. What matters for TCC is
+# the stable cdhash, not the trust chain.
+HAVE_SIGNING_IDENTITY := $(shell security find-identity -p codesigning 2>/dev/null | grep -q "\"$(SIGNING_IDENTITY)\"" && echo yes || echo no)
+
+.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms
 
 build: metallib icons
 	swift build -c release --arch arm64
@@ -26,10 +36,19 @@ build: metallib icons
 	  echo "  [warn] $(MLX_METALLIB) not found — Qwen ASR backends will fail at runtime."; \
 	  echo "         Run 'make setup-metal' once, then 'make build' again."; \
 	fi
+ifeq ($(HAVE_SIGNING_IDENTITY),yes)
+	codesign --force --deep --sign "$(SIGNING_IDENTITY)" \
+	  --entitlements Resources/VoiceTyping.entitlements \
+	  --options runtime \
+	  $(PAYLOAD)
+	@echo "  signed with '$(SIGNING_IDENTITY)' (stable cdhash)"
+else
 	codesign --force --deep --sign - \
 	  --entitlements Resources/VoiceTyping.entitlements \
 	  --options runtime \
 	  $(PAYLOAD)
+	@echo "  ad-hoc signed — run 'make setup-cert' once for stable TCC grants across rebuilds"
+endif
 	@echo "Built $(PAYLOAD)"
 
 # Build MLX's Metal shader library. Requires Apple's Metal Toolchain to be installed
@@ -57,6 +76,12 @@ icons:
 setup-metal:
 	xcodebuild -downloadComponent MetalToolchain
 
+# One-time: create a local self-signed codesigning identity so subsequent
+# `make build` runs produce a stable cdhash. Without this, macOS TCC
+# resets Microphone/Accessibility grants every rebuild.
+setup-cert:
+	bash Scripts/setup_cert.sh
+
 debug:
 	swift build --arch arm64
 
@@ -71,3 +96,11 @@ install: build
 clean:
 	swift package clean
 	rm -rf build .build
+
+# Dev convenience: reset TCC grants for this bundle so the next launch
+# re-prompts for Microphone + Accessibility. Useful when testing permission
+# flows or after bundle-id changes. Safe to run even if no grants exist.
+reset-perms:
+	-tccutil reset Accessibility com.voicetyping.app
+	-tccutil reset Microphone   com.voicetyping.app
+	@echo "✓ Reset TCC for com.voicetyping.app"
