@@ -80,21 +80,32 @@ final class LLMRefiner: Sendable {
     // MARK: - HTTP
 
     private func chat(system: String, user: String, config: LLMConfig) async throws -> String {
-        let base = config.baseURL.trimmingCharacters(in: .whitespaces)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: base + "/chat/completions") else {
+        // Literal pass-through: whatever the user typed in the URL field IS the
+        // POST target. No suffix-appending, no auto-stripping. Only defense is
+        // trimming whitespace/newlines — pasted keys / URLs often carry a `\n`,
+        // which URLSession rejects as an invalid header or URL.
+        let urlString = config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model  = config.model.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let url = URL(string: urlString) else {
             throw NSError(domain: "VoiceTyping.LLM", code: 400,
-                          userInfo: [NSLocalizedDescriptionKey: "Invalid base URL"])
+                          userInfo: [NSLocalizedDescriptionKey: "Invalid URL: \(urlString)"])
         }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = config.timeout
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // OpenRouter recommends (but doesn't require) these for analytics /
+        // abuse classification. Supplying them puts our traffic into our own
+        // app's bucket rather than "unattributed".
+        req.setValue("https://github.com/016hiro/voice_typing", forHTTPHeaderField: "HTTP-Referer")
+        req.setValue("VoiceTyping", forHTTPHeaderField: "X-Title")
 
         let body: [String: Any] = [
-            "model": config.model,
+            "model": model,
             "temperature": 0,
             "messages": [
                 ["role": "system", "content": system],
@@ -112,17 +123,36 @@ final class LLMRefiner: Sendable {
 
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let bodyStr = String(data: data, encoding: .utf8) ?? ""
+            Log.llm.error("LLM HTTP \(http.statusCode, privacy: .public) body=\(bodyStr, privacy: .public)")
             throw NSError(domain: "VoiceTyping.LLM", code: http.statusCode,
-                          userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode): \(bodyStr.prefix(200))"])
+                          userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode): \(bodyStr.prefix(300))"])
         }
 
-        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = obj["choices"] as? [[String: Any]],
+        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let bodyStr = String(data: data, encoding: .utf8) ?? ""
+            Log.llm.error("LLM non-JSON response: \(bodyStr, privacy: .public)")
+            throw NSError(domain: "VoiceTyping.LLM", code: 500,
+                          userInfo: [NSLocalizedDescriptionKey: "Non-JSON response: \(bodyStr.prefix(200))"])
+        }
+
+        // OpenRouter sometimes returns HTTP 200 with `{ "error": { ... } }` when
+        // the upstream provider rejects the request (invalid model id, upstream
+        // rate limit, etc.). Surface that instead of the generic shape error.
+        if let err = obj["error"] as? [String: Any] {
+            let msg = (err["message"] as? String) ?? String(describing: err)
+            Log.llm.error("LLM error body: \(msg, privacy: .public)")
+            throw NSError(domain: "VoiceTyping.LLM", code: 502,
+                          userInfo: [NSLocalizedDescriptionKey: msg])
+        }
+
+        guard let choices = obj["choices"] as? [[String: Any]],
               let first = choices.first,
               let message = first["message"] as? [String: Any],
               let content = message["content"] as? String else {
+            let bodyStr = String(data: data, encoding: .utf8) ?? ""
+            Log.llm.error("LLM unexpected shape: \(bodyStr, privacy: .public)")
             throw NSError(domain: "VoiceTyping.LLM", code: 500,
-                          userInfo: [NSLocalizedDescriptionKey: "Unexpected response shape"])
+                          userInfo: [NSLocalizedDescriptionKey: "Unexpected response shape: \(bodyStr.prefix(200))"])
         }
         return content
     }

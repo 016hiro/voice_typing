@@ -38,8 +38,11 @@ private enum Panel {
     static let width: CGFloat = 760
     static let height: CGFloat = 600
     static let cornerRadius: CGFloat = 28
-    /// Breathing room around the panel for the soft shadow.
-    static let shadowMargin: CGFloat = 28
+    /// Transparent space around the panel for the soft shadow. Keep this
+    /// larger than the panel shadow's blur + offset; if it's too tight the
+    /// shadow clips to the borderless window bounds and reads as a faint,
+    /// straight-edged grey frame outside the rounded panel.
+    static let shadowMargin: CGFloat = 48
 }
 
 // Palette pulled verbatim from the Liquid Glass design handoff. Every text
@@ -92,8 +95,10 @@ final class SettingsWindowController {
     }
 
     func show(tab: SettingsTab = .models) {
-        if let w = window {
-            (w.contentViewController as? NSHostingController<SettingsView>)?.rootView.selectedTab = tab
+        if let w = window,
+           let container = w.contentView,
+           let existingHost = container.subviews.compactMap({ $0 as? NSHostingView<SettingsView> }).first {
+            existingHost.rootView.selectedTab = tab
             w.makeKeyAndOrderFront(nil)
             NSApplication.shared.activate(ignoringOtherApps: true)
             return
@@ -106,16 +111,10 @@ final class SettingsWindowController {
             onRequestReloadBackend: onRequestReloadBackend
         )
 
-        let host = NSHostingController(rootView: view)
-        // Hosting view must be fully transparent — any opaque backing will
-        // render as a visible rectangle outside our rounded glass panel.
-        host.view.wantsLayer = true
-        host.view.layer?.backgroundColor = NSColor.clear.cgColor
-
         // The window is larger than the visible glass panel by `shadowMargin`
         // on each side. The SwiftUI root centers the panel inside this area;
-        // the surrounding transparent padding is where the Liquid Glass
-        // shadow bleeds into.
+        // the surrounding transparent padding is where the rounded panel
+        // shadow bleeds into without being clipped by the window bounds.
         let outerWidth  = Panel.width  + Panel.shadowMargin * 2
         let outerHeight = Panel.height + Panel.shadowMargin * 2
         let w = BorderlessKeyWindow(
@@ -124,7 +123,33 @@ final class SettingsWindowController {
             backing: .buffered,
             defer: false
         )
-        w.contentViewController = host
+        // Avoid NSHostingController here — on macOS 26 its managed view
+        // ships with a rounded "sheet" backing material that renders as a
+        // visible light panel offset behind our SwiftUI glass surface.
+        // A plain NSView contentView + NSHostingView gives us a truly
+        // transparent frame, mirroring how CapsuleWindow is assembled.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: outerWidth, height: outerHeight))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.clear.cgColor
+        container.appearance = NSAppearance(named: .darkAqua)
+
+        let hostView = NSHostingView(rootView: view)
+        hostView.wantsLayer = true
+        hostView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hostView)
+        NSLayoutConstraint.activate([
+            hostView.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            hostView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            hostView.widthAnchor.constraint(equalToConstant: Panel.width),
+            hostView.heightAnchor.constraint(equalToConstant: Panel.height),
+        ])
+
+        w.contentView = container
+        // The Liquid Glass design was only specified for dark appearance;
+        // pin the entire window to dark so materials render as intended
+        // regardless of the system appearance.
+        w.appearance = NSAppearance(named: .darkAqua)
         w.isOpaque = false
         w.backgroundColor = .clear
         // NSWindow's built-in shadow is always rectangular (follows the
@@ -134,8 +159,6 @@ final class SettingsWindowController {
         w.isMovableByWindowBackground = true
         w.isReleasedWhenClosed = false
         w.collectionBehavior = [.fullScreenAuxiliary]
-        w.contentView?.wantsLayer = true
-        w.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
         w.center()
 
         self.window = w
@@ -149,6 +172,33 @@ final class SettingsWindowController {
 private final class BorderlessKeyWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    /// AppKit routes ⌘A/⌘C/⌘V/⌘X/⌘Z through the main menu's Edit-menu key
+    /// equivalents. VoiceTyping runs `.accessory` with no main menu, so without
+    /// this forwarding SwiftUI TextFields inside Settings ignore those standard
+    /// shortcuts (users report "can't select-all / paste"). Forward to the first
+    /// responder via NSApp.sendAction so the field editor receives them.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if super.performKeyEquivalent(with: event) { return true }
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.contains(.command),
+              !modifiers.contains(.control),
+              !modifiers.contains(.option),
+              let chars = event.charactersIgnoringModifiers?.lowercased() else {
+            return false
+        }
+        let shift = modifiers.contains(.shift)
+        let action: Selector
+        switch chars {
+        case "a": action = #selector(NSText.selectAll(_:))
+        case "c": action = #selector(NSText.copy(_:))
+        case "v": action = #selector(NSText.paste(_:))
+        case "x": action = #selector(NSText.cut(_:))
+        case "z": action = shift ? Selector(("redo:")) : Selector(("undo:"))
+        default:  return false
+        }
+        return NSApp.sendAction(action, to: nil, from: self)
+    }
 }
 
 // MARK: - Root SwiftUI view
@@ -160,41 +210,50 @@ private struct SettingsView: View {
     let onRequestReloadBackend: (ASRBackend) -> Void
 
     var body: some View {
-        // The glass panel is placed in a ZStack so it sits inside a larger
-        // transparent area where its shadow can bleed.
-        ZStack {
-            Color.clear
-            panel
-        }
-        .frame(
-            width:  Panel.width  + Panel.shadowMargin * 2,
-            height: Panel.height + Panel.shadowMargin * 2
-        )
+        panel
+        // SwiftUI half of the same lock applied on the AppKit window —
+        // keeps materials and `.primary`/`.secondary` fallbacks on the
+        // dark side even if a user runs the system in Light mode.
+        .preferredColorScheme(.dark)
     }
 
     @ViewBuilder
     private var panel: some View {
-        panelContent
-            .frame(width: Panel.width, height: Panel.height)
-            .panelSurface(cornerRadius: Panel.cornerRadius)
-            // Top specular + bottom refraction rim echoing the Liquid Glass
-            // design's ::before / ::after pseudo-elements.
-            .overlay(
-                RoundedRectangle(cornerRadius: Panel.cornerRadius, style: .continuous)
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.45),
-                                Color.white.opacity(0.08),
-                                Color.white.opacity(0.14),
-                            ],
-                            startPoint: .top, endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
-            )
-            .shadow(color: .black.opacity(0.35), radius: 24, x: 0, y: 14)
-            .shadow(color: .black.opacity(0.25), radius: 6,  x: 0, y: 2)
+        let panelShape = RoundedRectangle(cornerRadius: Panel.cornerRadius, style: .continuous)
+        ZStack {
+            // Drive the soft drop shadow from an explicit rounded shape instead
+            // of the whole composed SwiftUI subtree. This avoids flattening the
+            // panel into a rectangular offscreen layer before shadowing it.
+            panelShape
+                .fill(Color.black.opacity(0.001))
+                .shadow(color: .black.opacity(0.35), radius: 24, x: 0, y: 14)
+                .shadow(color: .black.opacity(0.25), radius: 6,  x: 0, y: 2)
+
+            panelContent
+                .frame(width: Panel.width, height: Panel.height)
+                .panelSurface(cornerRadius: Panel.cornerRadius)
+                // Glass-material backdrop blur otherwise bleeds past the rounded
+                // corners, producing a faint rectangular halo in the shadow-margin
+                // area. Clip the surface to the rounded rect first, then draw the
+                // stroke on top so the halo disappears but depth remains.
+                .clipShape(panelShape)
+                // Top specular + bottom refraction rim echoing the Liquid Glass
+                // design's ::before / ::after pseudo-elements.
+                .overlay(
+                    panelShape
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.45),
+                                    Color.white.opacity(0.08),
+                                    Color.white.opacity(0.14),
+                                ],
+                                startPoint: .top, endPoint: .bottom
+                            ),
+                            lineWidth: 1
+                        )
+                )
+        }
     }
 
     private var panelContent: some View {
@@ -231,22 +290,34 @@ private struct SettingsView: View {
 // MARK: - Liquid Glass helpers
 
 private extension View {
-    /// macOS 26+ gets the real Liquid Glass treatment; older macOS falls back
-    /// to ultraThinMaterial + a hairline stroke.
-    @ViewBuilder
     func panelSurface(cornerRadius: CGFloat) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(in: .rect(cornerRadius: cornerRadius))
-        } else {
-            self.background(
-                .ultraThinMaterial,
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
-            .overlay(
+        // `.glassEffect` still leaves a faint rectangular backing outside the
+        // rounded shape on macOS 26 in this borderless window setup. Build the
+        // panel from shape-scoped materials and gradients instead so every
+        // sampled pixel stays clipped to the rounded rect.
+        self.background {
+            ZStack {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
-            )
+                    .fill(.ultraThinMaterial)
+
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.16),
+                                Color.white.opacity(0.05),
+                                Color.black.opacity(0.12),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            }
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+        )
     }
 }
 
@@ -699,8 +770,8 @@ private struct LLMTab: View {
             }
 
             SectionCard(title: "API") {
-                LabeledField(title: "Base URL") {
-                    TextField("https://api.openai.com/v1", text: $baseURL)
+                LabeledField(title: "API URL") {
+                    TextField("https://api.openai.com/v1/chat/completions", text: $baseURL)
                         .textFieldStyle(.roundedBorder)
                 }
 
@@ -750,6 +821,10 @@ private struct LLMTab: View {
             }
         }
         .onAppear { loadCurrent() }
+        // Auto-save on tab switch / window close so field edits aren't silently
+        // dropped when the user forgets to click Save. The explicit Save button
+        // is kept for Return-key muscle memory and the runTest flow.
+        .onDisappear { saveIfDirty() }
     }
 
     private var testStatusView: some View {
@@ -789,10 +864,23 @@ private struct LLMTab: View {
 
     private func save() {
         var cfg = state.llmConfig
-        cfg.baseURL = baseURL.trimmingCharacters(in: .whitespaces)
-        cfg.apiKey  = apiKey
-        cfg.model   = model.trimmingCharacters(in: .whitespaces)
+        // Only trim whitespace/newlines — pasted credentials / URLs often carry
+        // a trailing `\n` which URLSession rejects. No other normalization: the
+        // stored URL is exactly what gets POSTed to.
+        cfg.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        cfg.apiKey  = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        cfg.model   = model.trimmingCharacters(in: .whitespacesAndNewlines)
         state.llmConfig = cfg
+    }
+
+    private func saveIfDirty() {
+        let trimmedURL = baseURL.trimmingCharacters(in: .whitespaces)
+        let trimmedModel = model.trimmingCharacters(in: .whitespaces)
+        let current = state.llmConfig
+        guard trimmedURL != current.baseURL
+            || apiKey != current.apiKey
+            || trimmedModel != current.model else { return }
+        save()
     }
 
     private func runTest() {

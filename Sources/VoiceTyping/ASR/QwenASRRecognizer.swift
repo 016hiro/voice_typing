@@ -66,14 +66,26 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
             throw err
         }
 
-        setState(.loading(progress: 0))
+        // When weights are already on disk, `Qwen3ASRModel.fromPretrained` still
+        // calls the progress handler with "Downloading…" at 0% (then racing up
+        // via HEAD-check fractions before the real in-memory load phase). That
+        // would surface as a spurious "Downloading 0%" flash in the UI every
+        // time the user switched back to a cached Qwen backend. Detect the
+        // cached case at entry and pin progress to indeterminate "Loading…"
+        // regardless of what the library reports.
+        let alreadyDownloaded = ModelStore.isDownloaded(backend)
+        setState(.loading(progress: alreadyDownloaded ? -1 : 0))
 
         do {
             let handler: (Double, String) -> Void = { [weak self] fraction, status in
                 guard let self else { return }
-                let clamped = max(0.0, min(1.0, fraction))
-                self.setState(.loading(progress: clamped))
-                Log.asr.debug("Qwen download \(Int(clamped * 100))% — \(status, privacy: .public)")
+                if alreadyDownloaded {
+                    self.setState(.loading(progress: -1))
+                } else {
+                    let clamped = max(0.0, min(1.0, fraction))
+                    self.setState(.loading(progress: clamped))
+                }
+                Log.asr.debug("Qwen load \(Int(fraction * 100))% — \(status, privacy: .public)")
             }
 
             let loaded = try await Qwen3ASRModel.fromPretrained(
