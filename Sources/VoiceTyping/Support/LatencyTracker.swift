@@ -46,7 +46,10 @@ final class LatencyTracker: @unchecked Sendable {
         let inject = ms(.injectStart, .injectEnd)
         let total  = Int(((CFAbsoluteTimeGetCurrent() - createdAt) * 1000).rounded())
 
-        Log.app.info(
+        // .notice so `log stream` sees it without `--level info`. This is a
+        // summary metric, not debug spam — one line per completed utterance,
+        // worth first-class visibility in Console.
+        Log.app.notice(
             "latency backend=\(backend, privacy: .public) mode=\(mode, privacy: .public) dict=\(dictEntries, privacy: .public) rawFirst=\(rawFirst, privacy: .public) asr_ms=\(asr, privacy: .public) llm_ms=\(llm, privacy: .public) inject_ms=\(inject, privacy: .public) total_ms=\(total, privacy: .public)"
         )
     }

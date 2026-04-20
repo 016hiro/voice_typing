@@ -10,23 +10,29 @@ public enum RefineMode: String, Codable, CaseIterable, Sendable, Identifiable {
 
     public var id: String { rawValue }
 
-    public static let `default`: RefineMode = .conservative
+    /// v0.4.4: default flipped from `.conservative` → `.off` so fresh installs
+    /// don't incur the ~1 s LLM round-trip unless the user opts in. Existing
+    /// users keep whatever they already picked (UserDefaults takes precedence).
+    public static let `default`: RefineMode = .off
 
+    /// Labels reworked in v0.4.4. Previous "Conservative / Light / Aggressive"
+    /// implied a cautious → bold progression and masked that every non-Off
+    /// mode still hits the LLM. New labels describe *what* happens to the text.
     public var displayName: String {
         switch self {
         case .off:          return "Off"
-        case .conservative: return "Conservative"
-        case .light:        return "Light"
-        case .aggressive:   return "Aggressive"
+        case .conservative: return "Fix Errors"
+        case .light:        return "Clean Up"
+        case .aggressive:   return "Polish"
         }
     }
 
     public var shortDescription: String {
         switch self {
-        case .off:          return "Paste raw ASR output without LLM post-processing."
-        case .conservative: return "Fix misheard technical terms and homophones only. No rewriting."
-        case .light:        return "Conservative + remove filler words and stutter repetitions."
-        case .aggressive:   return "Light + recognize self-corrections, format spoken lists, smooth phrasing."
+        case .off:          return "Paste raw ASR output. No LLM call."
+        case .conservative: return "LLM fixes misheard terms and homophones only — no rewriting."
+        case .light:        return "Fix Errors + remove filler words and stutter repetitions."
+        case .aggressive:   return "Clean Up + merge self-corrections, format spoken lists, smooth phrasing."
         }
     }
 

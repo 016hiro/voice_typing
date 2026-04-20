@@ -42,6 +42,17 @@ build: metallib icons
 	  echo "  [warn] $(MLX_METALLIB) not found — Qwen ASR backends will fail at runtime."; \
 	  echo "         Run 'make setup-metal' once, then 'make build' again."; \
 	fi
+	# Bundle the Silero VAD model (1.2 MB) so streaming mode works offline on first run.
+	# Without this, SileroVADModel.fromPretrained() hits HuggingFace and hangs when
+	# the user triggers voice input offline. See QwenASRRecognizer.bundledVADCacheDir.
+	@if [ -f Resources/SileroVAD/model.safetensors ]; then \
+	  mkdir -p $(PAYLOAD)/Contents/Resources/SileroVAD; \
+	  cp Resources/SileroVAD/model.safetensors Resources/SileroVAD/config.json \
+	     $(PAYLOAD)/Contents/Resources/SileroVAD/; \
+	  echo "  embedded Silero VAD → $(PAYLOAD)/Contents/Resources/SileroVAD/"; \
+	else \
+	  echo "  [warn] Resources/SileroVAD/model.safetensors missing — streaming will download VAD on first use."; \
+	fi
 ifeq ($(HAVE_SIGNING_IDENTITY),yes)
 	codesign --force --deep --sign "$(SIGNING_IDENTITY)" \
 	  --entitlements Resources/VoiceTyping.entitlements \

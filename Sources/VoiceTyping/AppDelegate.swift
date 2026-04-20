@@ -274,7 +274,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         do {
             let levels = try audio.start()
-            state.capsuleText = ""
             state.status = .recording
             infoResetTask?.cancel()
             capsuleWindow.show(levels: levels)
@@ -321,12 +320,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let profile = state.profiles.lookup(bundleID: frontmostBundleID)
         let profileSnippet = profile?.systemPromptSnippet
         if let ctx = asrContext {
-            Log.app.info("ASR bias: backend=\(backend.rawValue, privacy: .public) entries=\(dictEntries.count, privacy: .public) context=\(ctx, privacy: .public)")
+            Log.dev(Log.app, "ASR bias: backend=\(backend.rawValue) entries=\(dictEntries.count) context=\(ctx)")
         } else {
-            Log.app.info("ASR bias: none (entries=\(dictEntries.count, privacy: .public), backend=\(backend.rawValue, privacy: .public))")
+            Log.dev(Log.app, "ASR bias: none (entries=\(dictEntries.count), backend=\(backend.rawValue))")
         }
         if let profile {
-            Log.app.info("Context profile: \(profile.name, privacy: .public) (bundle=\(profile.bundleID, privacy: .public))")
+            Log.dev(Log.app, "Context profile: \(profile.name) (bundle=\(profile.bundleID))")
         }
 
         let tracker = LatencyTracker()
@@ -394,8 +393,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Dispatches to the streaming or batch recognizer call, updating `capsuleText` with
-    /// each partial transcript so the user sees the text form. Returns the final transcript.
+    /// Dispatches to the streaming or batch recognizer call. Streaming still
+    /// runs (long-recording support, progressive ASR) but partials are no
+    /// longer rendered on screen — v0.4.4 removed the transcript preview UI.
     /// Streaming is Qwen-only — Whisper falls through to the batch path.
     private func runASR(
         buffer: AudioBuffer,
@@ -409,13 +409,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 buffer, language: language, context: context
             ) {
                 latest = partial
-                await MainActor.run {
-                    // Only update while we're still in the transcribing phase; if the
-                    // pipeline was cancelled and moved on, ignore late yields.
-                    if self.state.status == .transcribing {
-                        self.state.capsuleText = partial
-                    }
-                }
             }
             return latest
         }
@@ -439,7 +432,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var finalText = raw
         if willRefine {
             await MainActor.run {
-                self.state.capsuleText = raw
                 self.state.status = .refining
             }
             let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
@@ -465,7 +457,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         await MainActor.run {
             self.capsuleWindow.hide()
-            self.state.capsuleText = ""
             self.state.status = .idle
         }
 
@@ -497,7 +488,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         await MainActor.run {
             self.capsuleWindow.hide()
-            self.state.capsuleText = ""
             self.state.status = .idle
         }
 
@@ -579,7 +569,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func flashInfo(_ msg: String, autoHide: Bool) {
         state.status = .info(msg)
-        state.capsuleText = ""
         capsuleWindow.show(levels: nil)
 
         infoResetTask?.cancel()

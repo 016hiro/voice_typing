@@ -7,6 +7,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     case llm
     case dictionary
     case profiles
+    case advanced
 
     var id: String { rawValue }
 
@@ -16,6 +17,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .llm:        return "LLM"
         case .dictionary: return "Dictionary"
         case .profiles:   return "Profiles"
+        case .advanced:   return "Advanced"
         }
     }
 
@@ -25,6 +27,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .llm:        return "sparkles"
         case .dictionary: return "character.book.closed"
         case .profiles:   return "text.bubble"
+        case .advanced:   return "slider.horizontal.3"
         }
     }
 }
@@ -271,6 +274,8 @@ private struct SettingsView: View {
                     DictionaryTab(state: state)
                 case .profiles:
                     ProfilesTab(state: state)
+                case .advanced:
+                    AdvancedTab(state: state)
                 }
             }
             .padding(.horizontal, 22)
@@ -576,7 +581,7 @@ private struct ModelsTab: View {
         if !state.asrBackend.isQwen {
             return "Only Qwen3 backends stream. Switch to a Qwen model to enable."
         }
-        return "VAD-segmented ASR. Text appears progressively and recordings can exceed 60s. First use downloads Silero VAD (~2 MB)."
+        return "VAD-segmented ASR. Recordings can exceed 60s; the pipeline yields progressively so long inputs don't block. Silero VAD is bundled — no network on first use."
     }
 
     var body: some View {
@@ -606,7 +611,7 @@ private struct ModelsTab: View {
             SectionCard(title: "Streaming (experimental)") {
                 Toggle(isOn: $state.streamingEnabled) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Show transcript as it forms")
+                        Text("VAD-segmented transcription")
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(LG.text)
                             .fx()
@@ -1575,5 +1580,83 @@ private struct ProfilesTab: View {
             return NSWorkspace.shared.icon(forFile: url.path)
         }
         return NSWorkspace.shared.icon(for: .application)
+    }
+}
+
+// MARK: - Advanced tab
+
+private struct AdvancedTab: View {
+    @ObservedObject var state: AppState
+
+    private let logCommand = #"""
+log stream --predicate 'subsystem == "com.voicetyping.app"' --style compact
+"""#
+
+    var body: some View {
+        VStack(spacing: 14) {
+            SectionCard(title: "Developer Logging") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Toggle(isOn: $state.developerMode) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Verbose pipeline diagnostics")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(LG.text)
+                                .fx()
+                            Text("When on, setup and per-utterance diagnostics (VAD load path, ASR bias, context profile, etc.) are emitted at `.notice` level so `log stream` picks them up without `--level info`. Safe to leave off for normal use.")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(LG.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    Divider().opacity(0.25)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Tail the unified log")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(LG.text)
+                            .fx()
+                        Text("Paste the command below into Terminal. Latency lines (`latency backend=… asr_ms=…`) always show up; everything else is gated by the toggle above.")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(LG.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 10) {
+                            Text(logCommand)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(LG.text)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(Color.black.opacity(0.22))
+                                )
+                                .textSelection(.enabled)
+
+                            Button {
+                                copyCommand()
+                            } label: {
+                                Text("Copy")
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 6)
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.white.opacity(0.14))
+                            )
+                            .foregroundStyle(LG.text)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func copyCommand() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(logCommand, forType: .string)
     }
 }

@@ -14,7 +14,6 @@ final class AppState: ObservableObject {
     }
 
     @Published var status: CapsuleStatus = .idle
-    @Published var capsuleText: String = ""
     @Published var capsuleVisible: Bool = false
 
     @Published var language: Language {
@@ -26,7 +25,8 @@ final class AppState: ObservableObject {
     }
 
     /// v0.3: replaces `LLMConfig.enabled` as the master on/off + intensity knob.
-    /// `.off` bypasses the refiner entirely; `.conservative` matches v0.2 behavior.
+    /// `.off` bypasses the refiner entirely. v0.4.4 flipped the default to `.off`
+    /// so new installs don't incur LLM latency until the user opts in.
     @Published var refineMode: RefineMode {
         didSet { UserDefaults.standard.set(refineMode.rawValue, forKey: "refineMode") }
     }
@@ -43,6 +43,17 @@ final class AppState: ObservableObject {
     /// Qwen backends only — Whisper has no streaming path. Off by default.
     @Published var streamingEnabled: Bool {
         didSet { UserDefaults.standard.set(streamingEnabled, forKey: "streamingEnabled") }
+    }
+
+    /// v0.4.4: unlocks the `Log.dev(...)` call sites (setup / bias / profile
+    /// diagnostics) and shows them in `log stream` without `--level info`.
+    /// Off by default — keep user-facing log output quiet unless someone is
+    /// actively debugging a pipeline issue.
+    @Published var developerMode: Bool {
+        didSet {
+            UserDefaults.standard.set(developerMode, forKey: "developerMode")
+            Log.devMode = developerMode
+        }
     }
 
     /// v0.3 custom vocabulary. Persisted via `CustomDictionary` to a JSON file.
@@ -97,6 +108,10 @@ final class AppState: ObservableObject {
 
         self.rawFirstEnabled = ud.object(forKey: "rawFirstEnabled") as? Bool ?? false
         self.streamingEnabled = ud.object(forKey: "streamingEnabled") as? Bool ?? false
+
+        let dev = ud.bool(forKey: "developerMode")
+        self.developerMode = dev
+        Log.devMode = dev
 
         let backendRaw = ud.string(forKey: "asrBackend")
         let persisted = backendRaw.flatMap { ASRBackend(rawValue: $0) } ?? .default
@@ -154,27 +169,14 @@ final class AppState: ObservableObject {
         profilesTick &+= 1
     }
 
-    var labelTextForCapsule: String {
+    /// Text shown in the capsule — v0.4.4 onwards only the pipeline phase is
+    /// surfaced (transcript text was removed after it looked cramped/flashy).
+    var statusTextForCapsule: String {
         switch status {
-        case .idle, .recording:
-            return capsuleText.isEmpty ? "Listening" : capsuleText
-        case .transcribing:
-            if capsuleText.isEmpty { return "Transcribing" }
-            // Capsule has ~400pt for text after the Morse indicator; mono 16pt with
-            // tracking(2) is ~12pt/char, so 30 chars is the practical width cap.
-            return Self.tailTruncated(capsuleText, max: 30)
-        case .refining:
-            return "Refining"
-        case .info(let msg):
-            return msg
+        case .idle, .recording: return "Listening"
+        case .transcribing:     return "Transcribing"
+        case .refining:         return "Refining"
+        case .info(let msg):    return msg
         }
-    }
-
-    /// Keep the most recent characters visible when the streaming transcript
-    /// overflows the capsule width, so the latest segment stays on screen.
-    /// Internal (not private) so unit tests can call it directly via `@testable import`.
-    static func tailTruncated(_ s: String, max: Int) -> String {
-        guard s.count > max else { return s }
-        return "…\(s.suffix(max))"
     }
 }

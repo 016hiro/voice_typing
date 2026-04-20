@@ -97,7 +97,7 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
             )
             self.model = loaded
             setState(.ready)
-            Log.asr.info("Qwen3-ASR loaded: \(self.modelId, privacy: .public)")
+            Log.dev(Log.asr, "Qwen3-ASR loaded: \(self.modelId)")
         } catch {
             setState(.failed(error))
             Log.asr.error("Qwen prepare failed: \(error.localizedDescription, privacy: .public)")
@@ -334,9 +334,22 @@ public extension QwenASRRecognizer {
 
     // MARK: - Shared Silero VAD
 
-    /// Silero VAD is ~2 MB and model-agnostic — keep a single instance across
+    /// Silero VAD is ~1.2 MB and model-agnostic — keep a single instance across
     /// recognizer swaps so switching Qwen 0.6B ↔ 1.7B doesn't re-download it.
     static let vadActor = VADActor()
+
+    /// v0.4.4: weights are bundled at `<app>/Contents/Resources/SileroVAD/`
+    /// (staged by `make build`), so the VAD loads offline. Returns nil when
+    /// the bundle copy isn't present — e.g. running via `swift run` / `swift test`
+    /// without `make build`, in which case we fall back to HuggingFace (the
+    /// upstream default cache at `~/Library/Caches/qwen3-speech/...`).
+    fileprivate static func bundledVADCacheDir() -> URL? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        let candidate = resourceURL.appendingPathComponent("SileroVAD", isDirectory: true)
+        let weights = candidate.appendingPathComponent("model.safetensors")
+        guard FileManager.default.fileExists(atPath: weights.path) else { return nil }
+        return candidate
+    }
 
     /// Serialises concurrent first-time loads and caches the result. Returns a
     /// `SharedVADBox` because `SileroVADModel` itself isn't Sendable — callers
@@ -350,7 +363,16 @@ public extension QwenASRRecognizer {
             if let inflight { return try await inflight.value }
 
             let task = Task {
-                let model = try await SileroVADModel.fromPretrained()
+                let model: SileroVADModel
+                if let bundled = QwenASRRecognizer.bundledVADCacheDir() {
+                    Log.dev(Log.asr, "Loading Silero VAD from app bundle: \(bundled.path)")
+                    model = try await SileroVADModel.fromPretrained(
+                        cacheDir: bundled, offlineMode: true
+                    )
+                } else {
+                    Log.dev(Log.asr, "Silero VAD not bundled — falling back to HuggingFace cache")
+                    model = try await SileroVADModel.fromPretrained()
+                }
                 return SharedVADBox(model)
             }
             inflight = task

@@ -22,7 +22,7 @@
 - [ ] **快捷键可配置**：除 Fn 外提供 Right Option / Right Cmd 等替代方案；Settings 窗口加 hotkey picker。
 - [ ] **历史转录记录**：可选保存最近 N 条转录到 Settings → History 标签，支持复制/重新发送。
 
-> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。Post-record 流式 (opt-in experimental) 已落地在 v0.4.2，详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。Unit + E2E ASR 回归测试台已落地在 v0.4.3，详见 [../devlog/v0.4.3.md](../devlog/v0.4.3.md)。
+> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。Post-record 流式 (opt-in experimental) 已落地在 v0.4.2，详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。Unit + E2E ASR 回归测试台已落地在 v0.4.3，详见 [../devlog/v0.4.3.md](../devlog/v0.4.3.md)。VAD bundle 预装 + 胶囊去文本 + refine 默认 Off + Advanced 设置 (Developer logging) 已落地在 v0.4.4，详见 [../devlog/v0.4.4.md](../devlog/v0.4.4.md)。
 
 ## 中期 (v0.4+)
 

@@ -1,6 +1,6 @@
 # VoiceTyping 架构
 
-> 截至 v0.4.2。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)。
+> 截至 v0.4.4。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)、v0.4.3 ASR 回归测试台、v0.4.4 Silero VAD bundle 预装 + refine 默认 Off + Developer logging。
 
 ## 1. 概览
 
@@ -20,8 +20,8 @@ VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松
 | 语音识别 | `SpeechRecognizer` 协议 + 2 个实现 | 详见 §5.1；运行时切换 |
 | ASR backend A | WhisperKit 0.9+ (CoreML) | `openai_whisper-large-v3`，~3 GB |
 | ASR backend B | `soniqo/speech-swift` 0.0.9+ (MLX) | `Qwen3-ASR 0.6B/1.7B`，~400 MB / ~1.4 GB |
-| 流式 VAD | `SpeechVAD.SileroVADModel` (MLX, ~2 MB) | v0.4.2 opt-in；仅 Qwen backend；`StreamingVADProcessor` 切段后用 Qwen 逐段转 |
-| LLM | URLSession + OpenAI 兼容 chat completions | 四档强度可选（off/conservative/light/aggressive） |
+| 流式 VAD | `SpeechVAD.SileroVADModel` (MLX, ~1.2 MB) | v0.4.2 opt-in；仅 Qwen backend；`StreamingVADProcessor` 切段后用 Qwen 逐段转。v0.4.4 起权重打进 app bundle (`Contents/Resources/SileroVAD/`)，`offlineMode: true` 零网络加载 |
+| LLM | URLSession + OpenAI 兼容 chat completions | 四档强度 `Off / Fix Errors / Clean Up / Polish` (rawValue 仍是 off/conservative/light/aggressive)；v0.4.4 默认翻到 Off |
 | 字典 | `CustomDictionary` + JSON 文件 | LRU + debounced flush；双层注入（ASR context + LLM glossary） |
 | 上下文 profile | `ContextProfileStore` + JSON 文件 | v0.3.1；按前台 bundle ID 匹配，注入到 refiner system prompt |
 | 输入法切换 | Carbon TextInputServices (TIS) | CJK IME 检测与临时切换 |
@@ -143,7 +143,7 @@ flowchart TB
 ```
 main.swift                     入口；先跑 LLMConfigStore.migrateIfNeeded（v0.4.1），再 MainActor.assumeIsolated 启动 NSApplication
 AppDelegate.swift              生命周期 + 管线编排（Fn → 录音 → [batch|streaming] → refine → 注入）；NSWorkspace 观察前台 app 变化维护 lastNonSelfFrontmostBundleID
-AppState.swift                 @MainActor ObservableObject，UI/逻辑共享状态；streamingEnabled + tailTruncated 辅助（v0.4.2）
+AppState.swift                 @MainActor ObservableObject，UI/逻辑共享状态；streamingEnabled (v0.4.2)、developerMode (v0.4.4)；v0.4.4 移除 capsuleText + tailTruncated (胶囊不再显示转写文本)
 Support/
   Language.swift               5 语言 enum + Whisper ISO 码 + Qwen 英文单词映射 + isChinese 分支点
   Permissions.swift            麦克风 + 辅助功能权限查询/请求/跳转设置
@@ -157,7 +157,7 @@ ASR/
   ASRBackend.swift             三档后端 enum + MLXSupport 预检 + default 选择策略；MLXSupport.overrideAvailable 测试钩子
   RecognizerFactory.swift      根据 ASRBackend 构造对应 recognizer
   WhisperKitRecognizer.swift   WhisperKit 实现
-  QwenASRRecognizer.swift      MLX (soniqo/speech-swift) 实现 + OSAllocatedUnfairLock 串行化；v0.4.2 额外挂 transcribeStreaming extension + VADActor (actor) + SharedVADBox (@unchecked Sendable) — 自拼 VAD 分段 runner（不走上游 StreamingASR，它的 closure 同步执行给不出 progressive yield）
+  QwenASRRecognizer.swift      MLX (soniqo/speech-swift) 实现 + OSAllocatedUnfairLock 串行化；v0.4.2 额外挂 transcribeStreaming extension + VADActor (actor) + SharedVADBox (@unchecked Sendable) — 自拼 VAD 分段 runner（不走上游 StreamingASR，它的 closure 同步执行给不出 progressive yield）；v0.4.4 增 bundledVADCacheDir() 首选 app bundle 内的 Silero 权重，offlineMode: true 零网络加载
 Hotkey/
   FnHotkeyMonitor.swift        CGEventTap 监听 Fn flagsChanged，回调返回 nil 抑制 emoji 选择器
 Inject/
@@ -167,7 +167,7 @@ LLM/
   LLMConfig.swift              Codable 配置 + UserDefaults 存取 + hasCredentials 判断；v0.4.1 起 apiKey 由 CodingKeys 排除，load/save 时从 Keychain 填入/写出；LLMConfigStore.migrateIfNeeded 做 v0.3.x → v0.4.0 一次性迁移 + 失败时暴露 migrationFailure 给 AppDelegate 起告警
   KeychainStore.swift          v0.4.1 新增；Security framework 薄包装；service = com.voicetyping.app，account = openai-api-key，kSecAttrAccessibleWhenUnlocked
   LLMRefiner.swift             OpenAI 兼容请求 + 按 RefineMode 选 system prompt + glossary + profile snippet 拼接 + 失败回落
-  RefineMode.swift             4 档枚举 + 3 份 system prompt 常量（off 短路、conservative/light/aggressive）
+  RefineMode.swift             4 档枚举 + 3 份 system prompt 常量（off 短路、conservative/light/aggressive = 内部 rawValue；v0.4.4 起 displayName 对外叫 Off / Fix Errors / Clean Up / Polish，默认值 `.off`）
   DictionaryEntry.swift        id / term / hints[] / note / createdAt / lastMatchedAt + hasContent / recency / dedupKey
   CustomDictionary.swift       @MainActor，JSON 持久化，debounced 5s flush，损坏容错，import/export
   GlossaryBuilder.swift        Qwen context / Whisper prompt / LLM glossary 三套 formatter + LRU + 贪心 budget + 命中扫描
@@ -178,7 +178,7 @@ UI/
   Waveform5BarView.swift       历史波形条实现（v0.3 起不再在胶囊显示，保留给潜在场景）
 Menu/
   StatusItemController.swift   NSStatusItem + 动态 NSMenu，订阅 AppState 变化；Settings 升到顶级 ⌘,
-  SettingsWindow.swift         BorderlessKeyWindow + Liquid Glass (macOS 26+) + 4 tab：Models / LLM / Dictionary / Profiles (v0.3.1)；Models tab 底部新增 Streaming SectionCard (v0.4.2)，Whisper 下自动禁用
+  SettingsWindow.swift         BorderlessKeyWindow + Liquid Glass (macOS 26+) + 5 tab：Models / LLM / Dictionary / Profiles (v0.3.1) / Advanced (v0.4.4)；Models tab 底部挂 Streaming SectionCard (v0.4.2，Whisper 下禁用)；Advanced 里放 Developer logging 开关 + 一键 copy `log stream` 命令
 ```
 
 ## 4. 关键数据流
@@ -267,7 +267,7 @@ flowchart TD
 
 切换后端时 `AppDelegate.activateBackend` 会取消前一个 recognizer 的 state 订阅并新订阅新的；前一个 Qwen 的 MLX 权重会被 `unload()` 释放；老的模型文件保留在磁盘（下次切回零等待）。
 
-### 4.3 流式 VAD 加载流（v0.4.2）
+### 4.3 流式 VAD 加载流（v0.4.2；v0.4.4 改为 bundle 优先）
 
 ```mermaid
 flowchart TD
@@ -277,15 +277,18 @@ flowchart TD
     Detach --> VadGet["await Self.vadActor.get()"]
     VadGet --> VadCheck{"cached box?"}
     VadCheck -- yes --> Reuse["返回已缓存 SharedVADBox"]
-    VadCheck -- no --> VadLoad["SileroVADModel.fromPretrained<br/>modelId = aufklarer/Silero-VAD-v5-MLX<br/>cacheDir = HuggingFace 默认<br/>(~/Library/Caches/huggingface/)<br/>~2 MB 下载"]
-    VadLoad --> Wrap["包装进 SharedVADBox<br/>(@unchecked Sendable)"]
+    VadCheck -- no --> BundleCheck{"bundledVADCacheDir()<br/>找到 .app/Contents/Resources/SileroVAD/<br/>model.safetensors?"}
+    BundleCheck -- yes --> VadBundled["SileroVADModel.fromPretrained<br/>cacheDir = bundle<br/>offlineMode: true (零网络)"]
+    BundleCheck -- no --> VadLoad["SileroVADModel.fromPretrained<br/>(dev fallback: swift run / swift test)<br/>~/Library/Caches/qwen3-speech/...<br/>~1.2 MB 下载"]
+    VadBundled --> Wrap["包装进 SharedVADBox<br/>(@unchecked Sendable)"]
+    VadLoad --> Wrap
     Wrap --> Stash["box 缓存在 static VADActor 里<br/>跨 recognizer 重建存活"]
     Reuse --> Lock["transcribeLock.withLock"]
     Stash --> Lock
     Lock --> Loop["chunk-loop:<br/>StreamingVADProcessor.process<br/>→ .speechEnded<br/>→ asr.transcribe(segAudio)<br/>→ continuation.yield(accumulated)"]
 ```
 
-VAD 模型与 Qwen ASR 模型**不共用 cacheDir**：VAD 是 backend-agnostic 共享资源，走 HuggingFace 默认缓存；ASR 每个 backend 一个目录在 `Application Support`。目的是切 Qwen 0.6B ↔ 1.7B 不重下 VAD。
+**v0.4.4 打包策略**：Silero 权重 (`model.safetensors` 1.2 MB + `config.json` 384 B) 直接放 `Resources/SileroVAD/`，Makefile `make build` 拷进 `.app/Contents/Resources/SileroVAD/`。运行时 `QwenASRRecognizer.bundledVADCacheDir()` 优先用 bundle 内的权重，`offlineMode: true` 跳过网络。dev 回环 (`swift run` / `swift test` 不走 `make build`) fallback 到 HuggingFace 默认缓存 (`~/Library/Caches/qwen3-speech/models/aufklarer/Silero-VAD-v5-MLX/`)。
 
 ### 4.4 权限流
 
@@ -338,11 +341,11 @@ flowchart TD
 
 ### 5.4 LLM 四档 refiner
 
-`RefineMode` 枚举选 system prompt：
-- `off`：短路，不调用 LLM
-- `conservative`（默认）：v0.2 等价——只修明显 ASR 错误，不改写不润色
-- `light`：conservative 基础上额外去 filler（"嗯嗯啊啊"）和结巴重复
-- `aggressive`：light 基础上再做自我纠正识别、列表格式化、语义润色，硬约束输出 `0.9×–1.5×` 输入字符数控 token 膨胀
+`RefineMode` 枚举选 system prompt。rawValue 保持 v0.3 兼容；v0.4.4 把 displayName 改掉（给 UI 用）并把默认值翻到 `.off`：
+- `off`（v0.4.4 起默认，UI: "Off"）：短路，不调用 LLM
+- `conservative`（UI: "Fix Errors"）：v0.2 等价——只修明显 ASR 错误，不改写不润色
+- `light`（UI: "Clean Up"）：conservative 基础上额外去 filler（"嗯嗯啊啊"）和结巴重复
+- `aggressive`（UI: "Polish"）：light 基础上再做自我纠正识别、列表格式化、语义润色，硬约束输出 `0.9×–1.5×` 输入字符数控 token 膨胀
 
 字典 glossary 拼在 system prompt 后（拆 Preserve + Rewrite 两段），详见 §5.7。
 
@@ -491,9 +494,10 @@ public func transcribeStream(...) -> AsyncThrowingStream<TranscriptionSegment, E
 
 - `language` — Language rawValue（"en" / "zh-CN" / ...）
 - `asrBackend` — ASRBackend rawValue。`AppState` init 时若 persisted 是 Qwen 但 MLX 不可用，自动降级到 `.default`（Whisper）
-- `refineMode` — RefineMode rawValue（"off" / "conservative" / "light" / "aggressive"）。v0.2→v0.3 迁移：首次启动若无此键，从 `LLMConfig.enabled` 推断（true → conservative，false → off）
+- `refineMode` — RefineMode rawValue（"off" / "conservative" / "light" / "aggressive"）。v0.2→v0.3 迁移：首次启动若无此键，从 `LLMConfig.enabled` 推断（true → conservative，false → off）。**v0.4.4 起默认值翻到 `.off`**（rawValue 不动，既有用户选择保留）
 - `rawFirstEnabled` — Bool，默认 false
 - `streamingEnabled` — Bool，默认 false（v0.4.2）
+- `developerMode` — Bool，默认 false（v0.4.4）。AppState 在 init 尾端镜像到 `Log.devMode`，之后 didSet 也会同步
 - `llmConfig` — `LLMConfig` 的 JSON（**v0.4.1 起不含 apiKey 字段**；通过 `private enum CodingKeys` 排除）
 
 ### 7.2 Keychain (v0.4.1)
@@ -517,7 +521,7 @@ public func transcribeStream(...) -> AsyncThrowingStream<TranscriptionSegment, E
   - `whisperkit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3/`（WhisperKit 自己会在 `downloadBase` 内加一层 `models/`）
   - `qwen-asr-0.6b/models/aufklarer/Qwen3-ASR-0.6B-MLX-4bit/`
   - `qwen-asr-1.7b/models/aufklarer/Qwen3-ASR-1.7B-MLX-8bit/`
-- Silero VAD（v0.4.2）：`~/Library/Caches/huggingface/` —— **走 HF 默认缓存，不进 Application Support**。VAD 是 backend-agnostic 共享资源，分开放避免 Qwen 0.6B ↔ 1.7B 切换重下载
+- Silero VAD（v0.4.2 首引入，v0.4.4 改打包策略）：运行时优先用 `<VoiceTyping.app>/Contents/Resources/SileroVAD/model.safetensors`（Makefile 拷，约 1.2 MB），`offlineMode: true` 零网络。dev 回环（`swift run` / `swift test` 不走 `make build`）fallback 到 `~/Library/Caches/qwen3-speech/models/aufklarer/Silero-VAD-v5-MLX/`。VAD 是 backend-agnostic 共享资源，与 Qwen ASR 分开 cache，切 0.6B ↔ 1.7B 不重下
 - v0.1.0 → v0.2.0 迁移：启动时若发现 `<modelsURL>/models/`（v0.1.0 平铺路径）存在而 `<modelsURL>/whisperkit/models/` 不存在，整体 `mv` 过去。[`ModelStore.migrateV010WhisperLayoutIfNeeded`](../Sources/VoiceTyping/Support/ModelStore.swift)
 
 ## 8. 权限模型
