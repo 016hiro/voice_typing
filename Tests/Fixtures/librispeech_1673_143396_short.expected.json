@@ -1,0 +1,10 @@
+{
+  "keywords": [
+    "charitable",
+    "criticism"
+  ],
+  "minChars": 35,
+  "maxChars": 451,
+  "language": "en",
+  "streamingMinPartials": 1
+}

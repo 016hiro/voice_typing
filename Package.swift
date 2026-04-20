@@ -31,6 +31,13 @@ let package = Package(
                 .linkedFramework("Carbon"),
                 .linkedFramework("ApplicationServices")
             ]
+        ),
+        .testTarget(
+            name: "VoiceTypingTests",
+            dependencies: [
+                "VoiceTyping"
+            ],
+            path: "Tests/VoiceTypingTests"
         )
     ]
 )

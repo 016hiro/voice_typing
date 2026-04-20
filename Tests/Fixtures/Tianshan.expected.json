@@ -1,0 +1,7 @@
+{
+  "keywords": ["天山", "吐鲁番盆地"],
+  "minChars": 30,
+  "maxChars": 400,
+  "language": "zh-CN",
+  "streamingMinPartials": 1
+}

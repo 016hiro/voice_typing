@@ -1,0 +1,10 @@
+{
+  "keywords": [
+    "everywhere",
+    "presently"
+  ],
+  "minChars": 36,
+  "maxChars": 460,
+  "language": "en",
+  "streamingMinPartials": 1
+}

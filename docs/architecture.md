@@ -1,10 +1,10 @@
 # VoiceTyping 架构
 
-> 截至 v0.3.0。本文档跟随代码同步更新，发现不一致以代码为准。
+> 截至 v0.4.2。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)。
 
 ## 1. 概览
 
-VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松开后将转录文本通过剪贴板 + Cmd+V 注入到当前焦点输入框。默认中文（zh-CN），支持五种语言切换；可选 LLM 后处理做四档强度可选的清洗与重写；自定义词典双层注入（ASR bias + LLM glossary）提升术语与专有名词准确率。
+VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松开后将转录文本通过剪贴板 + Cmd+V 注入到当前焦点输入框。默认中文（zh-CN），支持五种语言切换；可选 LLM 后处理做四档强度可选的清洗与重写；自定义词典双层注入（ASR bias + LLM glossary）+ per-app 上下文 profile 提升术语与专有名词准确率。Qwen3 后端可选 VAD 分段流式（opt-in，胶囊里逐段浮现文字，长录音不受 per-segment token cap 限制）。
 
 **运行模式**：LSUIElement（仅菜单栏图标，无 Dock 图标）。
 **目标平台**：macOS 15+，Apple Silicon (arm64)（MLX Swift 要求）。
@@ -20,11 +20,16 @@ VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松
 | 语音识别 | `SpeechRecognizer` 协议 + 2 个实现 | 详见 §5.1；运行时切换 |
 | ASR backend A | WhisperKit 0.9+ (CoreML) | `openai_whisper-large-v3`，~3 GB |
 | ASR backend B | `soniqo/speech-swift` 0.0.9+ (MLX) | `Qwen3-ASR 0.6B/1.7B`，~400 MB / ~1.4 GB |
+| 流式 VAD | `SpeechVAD.SileroVADModel` (MLX, ~2 MB) | v0.4.2 opt-in；仅 Qwen backend；`StreamingVADProcessor` 切段后用 Qwen 逐段转 |
 | LLM | URLSession + OpenAI 兼容 chat completions | 四档强度可选（off/conservative/light/aggressive） |
 | 字典 | `CustomDictionary` + JSON 文件 | LRU + debounced flush；双层注入（ASR context + LLM glossary） |
+| 上下文 profile | `ContextProfileStore` + JSON 文件 | v0.3.1；按前台 bundle ID 匹配，注入到 refiner system prompt |
 | 输入法切换 | Carbon TextInputServices (TIS) | CJK IME 检测与临时切换 |
 | 文本注入 | NSPasteboard + 合成 Cmd+V (CGEvent) | 可选 Raw-first：先注 raw，refiner 后台替换 |
-| 持久化 | UserDefaults + JSON | UserDefaults：语言/后端/refineMode/rawFirst/LLMConfig；JSON：字典 |
+| API key 存储 | `KeychainStore` (Security framework) | v0.4.1：`kSecClassGenericPassword`，service = bundle id，`kSecAttrAccessibleWhenUnlocked` |
+| 持久化 | UserDefaults + JSON + Keychain | UserDefaults：语言/后端/refineMode/rawFirst/streamingEnabled/LLMConfig(不含 apiKey)；JSON：字典 + profiles；Keychain：apiKey |
+| 代码签名 | 自签名证书（稳定 cdhash） | v0.4.1：`make setup-cert` 一次性创建；TCC 授权跨 rebuild 保留 |
+| CI | GitHub Actions macos-15 | v0.4.1：`swift build -c debug` smoke 防 Swift 6 regress |
 
 ## 3. 模块地图
 
@@ -33,12 +38,12 @@ VoiceTyping 是一个 macOS 菜单栏语音输入工具：按住 Fn 录音，松
 ```mermaid
 flowchart TB
     subgraph Entry["入口"]
-        main["main.swift"]
-        AppDel["AppDelegate"]
+        main["main.swift<br/>触发 LLMConfigStore.migrateIfNeeded"]
+        AppDel["AppDelegate<br/>+ NSWorkspace didActivate 观察"]
     end
 
     subgraph State["状态层"]
-        AppState["AppState<br/>@MainActor ObservableObject"]
+        AppState["AppState<br/>@MainActor ObservableObject<br/>+ streamingEnabled / lastNonSelfFrontmostBundleID"]
     end
 
     subgraph Hotkey["热键层"]
@@ -49,29 +54,37 @@ flowchart TB
         AudioCap["AudioCapture<br/>AVAudioEngine"]
     end
 
-    subgraph ASR["ASR 层（协议化）"]
-        Protocol["SpeechRecognizer 协议"]
+    subgraph ASR["ASR 层（协议化 + 可选流式）"]
+        Protocol["SpeechRecognizer 协议<br/>(batch: transcribe)"]
         Backend["ASRBackend enum<br/>+ MLXSupport 预检"]
         Factory["RecognizerFactory"]
         Whisper["WhisperKitRecognizer"]
-        Qwen["QwenASRRecognizer"]
+        Qwen["QwenASRRecognizer<br/>+ transcribeStreaming (v0.4.2)"]
+        VADBox["VADActor / SharedVADBox<br/>shared SileroVADModel<br/>lazy-loaded on first stream"]
         Protocol -.->|implemented by| Whisper
         Protocol -.->|implemented by| Qwen
         Factory --> Backend
         Factory --> Whisper
         Factory --> Qwen
+        Qwen -.->|first streaming call| VADBox
     end
 
     subgraph LLM["LLM 层"]
         LLMR["LLMRefiner"]
-        LLMC["LLMConfig"]
+        LLMC["LLMConfig<br/>(apiKey 不走 Codable)"]
+        Keychain["KeychainStore<br/>apiKey 在 Keychain"]
         Mode["RefineMode enum<br/>4 档 + 3 份 system prompt"]
         Dict["CustomDictionary<br/>@MainActor + JSON 持久化"]
-        Entry["DictionaryEntry"]
+        DictEntry["DictionaryEntry"]
         Gloss["GlossaryBuilder<br/>LRU + budget 贪心"]
-        Dict --> Entry
+        Profiles["ContextProfileStore<br/>@MainActor + JSON 持久化"]
+        ProfileEntry["ContextProfile<br/>bundleID 映射"]
+        Dict --> DictEntry
+        Profiles --> ProfileEntry
+        LLMC -.->|apiKey 读写| Keychain
         LLMR --> Mode
         LLMR --> Gloss
+        LLMR --> LLMC
     end
 
     subgraph Inject["注入层"]
@@ -82,7 +95,7 @@ flowchart TB
 
     subgraph UI["UI 层"]
         Status["StatusItemController<br/>NSStatusItem"]
-        Settings["SettingsWindow<br/>SwiftUI Form + 2 tabs"]
+        Settings["SettingsWindow<br/>SwiftUI + 4 tabs:<br/>Models / LLM / Dictionary / Profiles"]
         Capsule["CapsuleWindow<br/>NSPanel + HUD"]
         CapsuleV["CapsuleView + Waveform5BarView<br/>SwiftUI"]
         Capsule --> CapsuleV
@@ -115,11 +128,12 @@ flowchart TB
 
     Whisper --> Store
     Qwen --> Store
-    LLMR --> LLMC
     AudioCap --> Lang
     AppState --> Dict
+    AppState --> Profiles
     AppDel --> Gloss
     AppDel --> Latency
+    AppDel -.->|profile lookup by frontmost bundleID| Profiles
 ```
 
 ### 3.2 文件职责
@@ -127,9 +141,9 @@ flowchart TB
 每个文件的职责（src 路径相对 `Sources/VoiceTyping/`）：
 
 ```
-main.swift                     入口；MainActor.assumeIsolated 启动 NSApplication
-AppDelegate.swift              生命周期 + 管线编排（Fn → 录音 → 转录 → refine → 注入）
-AppState.swift                 @MainActor ObservableObject，UI/逻辑共享状态
+main.swift                     入口；先跑 LLMConfigStore.migrateIfNeeded（v0.4.1），再 MainActor.assumeIsolated 启动 NSApplication
+AppDelegate.swift              生命周期 + 管线编排（Fn → 录音 → [batch|streaming] → refine → 注入）；NSWorkspace 观察前台 app 变化维护 lastNonSelfFrontmostBundleID
+AppState.swift                 @MainActor ObservableObject，UI/逻辑共享状态；streamingEnabled + tailTruncated 辅助（v0.4.2）
 Support/
   Language.swift               5 语言 enum + Whisper ISO 码 + Qwen 英文单词映射 + isChinese 分支点
   Permissions.swift            麦克风 + 辅助功能权限查询/请求/跳转设置
@@ -140,29 +154,31 @@ Audio/
   AudioCapture.swift           AVAudioEngine 采集 + 实时 RMS 流 + 16 kHz 重采样累积
 ASR/
   SpeechRecognizer.swift       协议：prepare/transcribe/cancel + 类型 (AudioBuffer, RecognizerState)
-  ASRBackend.swift             三档后端 enum + MLXSupport 预检 + default 选择策略
+  ASRBackend.swift             三档后端 enum + MLXSupport 预检 + default 选择策略；MLXSupport.overrideAvailable 测试钩子
   RecognizerFactory.swift      根据 ASRBackend 构造对应 recognizer
   WhisperKitRecognizer.swift   WhisperKit 实现
-  QwenASRRecognizer.swift      MLX (soniqo/speech-swift) 实现 + OSAllocatedUnfairLock 串行化
+  QwenASRRecognizer.swift      MLX (soniqo/speech-swift) 实现 + OSAllocatedUnfairLock 串行化；v0.4.2 额外挂 transcribeStreaming extension + VADActor (actor) + SharedVADBox (@unchecked Sendable) — 自拼 VAD 分段 runner（不走上游 StreamingASR，它的 closure 同步执行给不出 progressive yield）
 Hotkey/
   FnHotkeyMonitor.swift        CGEventTap 监听 Fn flagsChanged，回调返回 nil 抑制 emoji 选择器
 Inject/
   InputSourceManager.swift     TIS 查询当前 IME / 切换到 ABC / 还原
   TextInjector.swift           @MainActor，剪贴板快照 + IME 切换 + Cmd+V + 还原
 LLM/
-  LLMConfig.swift              Codable 配置 + UserDefaults 存取 + hasCredentials 判断
-  LLMRefiner.swift             OpenAI 兼容请求 + 按 RefineMode 选 system prompt + glossary 拼接 + 失败回落
+  LLMConfig.swift              Codable 配置 + UserDefaults 存取 + hasCredentials 判断；v0.4.1 起 apiKey 由 CodingKeys 排除，load/save 时从 Keychain 填入/写出；LLMConfigStore.migrateIfNeeded 做 v0.3.x → v0.4.0 一次性迁移 + 失败时暴露 migrationFailure 给 AppDelegate 起告警
+  KeychainStore.swift          v0.4.1 新增；Security framework 薄包装；service = com.voicetyping.app，account = openai-api-key，kSecAttrAccessibleWhenUnlocked
+  LLMRefiner.swift             OpenAI 兼容请求 + 按 RefineMode 选 system prompt + glossary + profile snippet 拼接 + 失败回落
   RefineMode.swift             4 档枚举 + 3 份 system prompt 常量（off 短路、conservative/light/aggressive）
   DictionaryEntry.swift        id / term / hints[] / note / createdAt / lastMatchedAt + hasContent / recency / dedupKey
   CustomDictionary.swift       @MainActor，JSON 持久化，debounced 5s flush，损坏容错，import/export
   GlossaryBuilder.swift        Qwen context / Whisper prompt / LLM glossary 三套 formatter + LRU + 贪心 budget + 命中扫描
+  ContextProfile.swift         v0.3.1 新增；ContextProfile { id, name, bundleID, systemPromptSnippet, createdAt, lastUsedAt? } + ContextProfileStore（@MainActor，JSON 持久化，同 CustomDictionary 模式，lookup(bundleID:)）
 UI/
   CapsuleWindow.swift          NSPanel (nonactivatingPanel) + NSVisualEffectView (.hudWindow)
-  CapsuleView.swift            SwiftUI 胶囊内容（HStack: 波形 + 文字）+ 尺寸 PreferenceKey
-  Waveform5BarView.swift       5 根 RMS 驱动的波形条（attack/release 包络 + 抖动 + 权重）
+  CapsuleView.swift            SwiftUI 胶囊内容（HStack: Morse indicator + 文字）+ 尺寸 PreferenceKey；文字用 AppState.labelTextForCapsule，流式 transcribing 阶段做 head truncation 只显示最后 30 字符
+  Waveform5BarView.swift       历史波形条实现（v0.3 起不再在胶囊显示，保留给潜在场景）
 Menu/
   StatusItemController.swift   NSStatusItem + 动态 NSMenu，订阅 AppState 变化；Settings 升到顶级 ⌘,
-  SettingsWindow.swift         BorderlessKeyWindow + Liquid Glass (macOS 26+) + 3 tab：Models / LLM / Dictionary
+  SettingsWindow.swift         BorderlessKeyWindow + Liquid Glass (macOS 26+) + 4 tab：Models / LLM / Dictionary / Profiles (v0.3.1)；Models tab 底部新增 Streaming SectionCard (v0.4.2)，Whisper 下自动禁用
 ```
 
 ## 4. 关键数据流
@@ -184,11 +200,16 @@ flowchart TD
     AppUp --> Stop["AppDelegate.stopRecording"]
     Stop --> ShortGuard{"samples &gt;= 400?"}
     ShortGuard -- no --> NoSpeech["flashInfo 'No speech'<br/>early return"]
-    ShortGuard -- yes --> Snap["Snapshot<br/>backend / language / dictEntries / mode / llmConfig / rawFirst / bundleID"]
+    ShortGuard -- yes --> Snap["Snapshot<br/>backend / language / dictEntries / mode / llmConfig /<br/>rawFirst / streamingEnabled / frontmost bundleID"]
+    Snap --> ProfLookup["profiles.lookup(bundleID)<br/>→ profile?.systemPromptSnippet<br/>(v0.3.1)"]
     Snap --> BuildCtx["GlossaryBuilder.buildForASR<br/>(backend, entries, language)<br/>→ ASR context"]
     Snap --> StateTrans["AppState.status = .transcribing"]
-    BuildCtx --> Transcribe["recognizer.transcribe<br/>audio + language + context"]
-    Transcribe --> RawText["raw text"]
+    BuildCtx --> StreamGate{"streamingEnabled<br/>AND backend.isQwen?<br/>(v0.4.2)"}
+    StreamGate -- no --> Transcribe["recognizer.transcribe<br/>audio + language + context"]
+    StreamGate -- yes --> StreamStart["QwenASRRecognizer.transcribeStreaming<br/>(VADActor.get → StreamingVADProcessor<br/>→ 每 .speechEnded 喂段给 Qwen3ASRModel.transcribe)"]
+    StreamStart --> StreamYield["for try await partial<br/>→ state.capsuleText = partial<br/>(progressive 胶囊显示)"]
+    StreamYield --> RawText["最后 partial = 最终 raw text"]
+    Transcribe --> RawText
     RawText --> ScanAsr["GlossaryBuilder.matchedEntryIDs<br/>→ dictionary.updateLastMatched"]
     ScanAsr --> WillRefine{"mode.systemPrompt != nil<br/>AND llmConfig.hasCredentials?"}
     WillRefine -- no --> InjectRaw["TextInjector.inject raw"]
@@ -196,7 +217,7 @@ flowchart TD
 
     RawFirstCheck -- no --> StateRef["AppState.status = .refining"]
     StateRef --> BuildGloss["GlossaryBuilder.buildLLMGlossary<br/>Preserve 段 + Rewrite 段"]
-    BuildGloss --> Refine["LLMRefiner.refine<br/>(text, language, mode, glossary, config)"]
+    BuildGloss --> Refine["LLMRefiner.refine<br/>(text, language, mode, glossary, profileSnippet, config)"]
     Refine --> ScanLLM["matchedEntryIDs on refined"]
     ScanLLM --> InjectRefined["TextInjector.inject refined"]
 
@@ -246,7 +267,27 @@ flowchart TD
 
 切换后端时 `AppDelegate.activateBackend` 会取消前一个 recognizer 的 state 订阅并新订阅新的；前一个 Qwen 的 MLX 权重会被 `unload()` 释放；老的模型文件保留在磁盘（下次切回零等待）。
 
-### 4.3 权限流
+### 4.3 流式 VAD 加载流（v0.4.2）
+
+```mermaid
+flowchart TD
+    FirstStream["用户首次按 Fn<br/>且 streamingEnabled + isQwen"] --> RunASR["AppDelegate.runASR<br/>走 streaming 分支"]
+    RunASR --> CallStream["QwenASRRecognizer.transcribeStreaming"]
+    CallStream --> Detach["Task.detached"]
+    Detach --> VadGet["await Self.vadActor.get()"]
+    VadGet --> VadCheck{"cached box?"}
+    VadCheck -- yes --> Reuse["返回已缓存 SharedVADBox"]
+    VadCheck -- no --> VadLoad["SileroVADModel.fromPretrained<br/>modelId = aufklarer/Silero-VAD-v5-MLX<br/>cacheDir = HuggingFace 默认<br/>(~/Library/Caches/huggingface/)<br/>~2 MB 下载"]
+    VadLoad --> Wrap["包装进 SharedVADBox<br/>(@unchecked Sendable)"]
+    Wrap --> Stash["box 缓存在 static VADActor 里<br/>跨 recognizer 重建存活"]
+    Reuse --> Lock["transcribeLock.withLock"]
+    Stash --> Lock
+    Lock --> Loop["chunk-loop:<br/>StreamingVADProcessor.process<br/>→ .speechEnded<br/>→ asr.transcribe(segAudio)<br/>→ continuation.yield(accumulated)"]
+```
+
+VAD 模型与 Qwen ASR 模型**不共用 cacheDir**：VAD 是 backend-agnostic 共享资源，走 HuggingFace 默认缓存；ASR 每个 backend 一个目录在 `Application Support`。目的是切 Qwen 0.6B ↔ 1.7B 不重下 VAD。
+
+### 4.4 权限流
 
 ```mermaid
 flowchart TD
@@ -363,6 +404,62 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 
 详见 [`AppDelegate.swift`](../Sources/VoiceTyping/AppDelegate.swift) 的 `injectRawFirstThenRefine`。
 
+### 5.9 Per-app 上下文 profile（v0.3.1）
+
+不同 app 需要不同术语和写作风格：IDE 要保留 `@MainActor`、`CGEvent`；聊天 app 不要把 "哈哈" refine 成 "我感到开心"。
+
+**机制**：
+- `ContextProfile { id, name, bundleID, systemPromptSnippet, ... }` 存 JSON（`~/Library/.../profiles.json`）
+- `AppDelegate` 订阅 `NSWorkspace.didActivateApplicationNotification`，维护 `AppState.lastNonSelfFrontmostBundleID`（过滤掉 VoiceTyping 自己）
+- Fn 松开瞬间 `stopRecording` 抓当前前台 bundle ID → `profiles.lookup(bundleID)` → `profile?.systemPromptSnippet` 作为 snapshot 的一部分 pass 给 refiner
+- `LLMRefiner.refine(..., profileSnippet:, ...)` 把 snippet 拼到 system prompt 尾（词典 glossary 之前）
+
+**为什么不在 refiner 里查 profile**：snapshot 时刻（Fn 松开）和 refine 时刻（ASR 完成后）可能前台变了（用户打开了别的 app 等着粘贴）。在 snapshot 时锁定 profile 才反映"用户录这段话时的意图"。
+
+**用户编辑入口**：Settings → **Profiles** tab（v0.3.1 新增第 4 个）。"Add frontmost app" 按钮利用 `lastNonSelfFrontmostBundleID`（而不是当前 frontmostApp，那会是 VoiceTyping 自己）。
+
+### 5.10 API key Keychain 迁移（v0.4.1）
+
+v0.3.x 把 `LLMConfig` 整个 JSON 序列化存 `UserDefaults["llmConfig"]`，包括 `apiKey`。明文落在 `~/Library/Preferences/com.voicetyping.app.plist`，任何能读这个文件的进程都能拿到 key。
+
+**v0.4.1 修复**：
+- `LLMConfig.apiKey` 通过 `private enum CodingKeys` 从 Codable 排除 —— 序列化时 JSON 里不再有这字段
+- 新增 `KeychainStore` 薄包装（`kSecClassGenericPassword`, `kSecAttrAccessibleWhenUnlocked`, service = bundle ID）
+- `LLMConfigStore.load()` 解码完 struct 再从 Keychain 读 key 填上；`save()` 写 struct 到 UserDefaults + 写 key 到 Keychain
+- **一次性迁移**：`main.swift` 在 `NSApplication.shared` 起身前调 `LLMConfigStore.migrateIfNeeded()` → `JSONSerialization` 读原始 JSON 查 legacy `apiKey` 字段 → 试 `KeychainStore.writeAPIKey` → **无论成败都把 `apiKey` 从 JSON 里剥掉重写**（杜绝半迁移明文残留）
+- 迁移失败（Keychain 写入异常）→ `migrationFailure` 记录原因 → AppDelegate 启动末尾看到就弹 alert 让用户重输
+
+### 5.11 流式转录：自拼 runner，不走上游 `StreamingASR`（v0.4.2）
+
+上游 `soniqo/speech-swift 0.0.9` 的 `StreamingASR.transcribeStream(audio:)` 是同步 closure 喂 AsyncThrowingStream：
+
+```swift
+// speech-swift 源码，简化
+public func transcribeStream(...) -> AsyncThrowingStream<TranscriptionSegment, Error> {
+    AsyncThrowingStream { continuation in
+        while offset < samples.count { ... continuation.yield(...) ... }  // 同步
+        continuation.finish()
+    }
+}
+```
+
+`AsyncThrowingStream.init { continuation in ... }` 的 closure 在 init 阶段同步执行 —— 调用时 closure 跑完**所有** yield 再返回，消费者拿到的是已装满的 buffer。等价于同步批接口，UI 不可能看到 progressive 段级更新。
+
+**解法**（`QwenASRRecognizer.transcribeStreaming`）：
+
+1. 返回我们自己的 `AsyncThrowingStream<String, Error>`
+2. stream 的 closure 里 `Task.detached { ... }` —— producer 跑在独立 thread，consumer 在 main actor
+3. detached task 里取 `SharedVADBox`（`VADActor` 缓存）→ `transcribeLock.withLock` 串行化 Qwen model 访问 → 复刻 upstream 的状态机（`StreamingVADProcessor.process` + force-split at 10s + flush）→ 每段 transcribed 后 `continuation.yield(accumulated)`
+4. consumer 的 `for try await partial in ...` 真的能被每次 yield 唤醒，`capsuleText` 逐段刷新
+
+**与 batch 共享**：Qwen3ASRModel 在 `QwenASRRecognizer` 内 `@unchecked Sendable` 的 self 里，通过 `OSAllocatedUnfairLock` 串行化。streaming 和 batch 互斥共用同一把锁。`AppDelegate.pipelineTask` 单飞保证用户层面不会有两条管线同时跑。
+
+**Sendable conduit**：`SileroVADModel` 非 Sendable，跨 `VADActor.get() async` 返回给 detached task 需要 Sendable 载体。`SharedVADBox: @unchecked Sendable { let model: SileroVADModel }` 做 conduit —— box 本身 Sendable，`.model` 只在 `transcribeLock` 保护的串行区里解包访问。
+
+**注入策略**：**commit-on-end**，不做 progressive inject。流式价值定义为"胶囊里看文字形成"，不是"文字提前进 textfield"。段级 inject 会和用户正在 focused app 里打字干扰，且 undo chain 乱掉。
+
+**Whisper 不支持**：`ASRBackend.isQwen` 是唯一 gate。Settings toggle 在 Whisper 下 `.disabled`；`useStreaming` 计算为 false 时走 batch 路径。
+
 ## 6. 并发与线程模型
 
 主要的 isolation 策略：
@@ -381,22 +478,47 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 | `FnHotkeyMonitor` | non-isolated, `@unchecked Sendable` | tap callback 在 CFRunLoop 主线程，但通过 AsyncStream 解耦给消费者 |
 | `LLMRefiner` | non-isolated, `Sendable` | 无状态 URLSession 封装，跨 actor 安全传递 |
 | `CustomDictionary` | `@MainActor` | 读写 `entries` + `@Published dictionaryTick` 触发 SwiftUI 重渲；UI 与 pipeline 都从主线程访问 |
+| `ContextProfileStore` | `@MainActor` | 同 CustomDictionary 模式；`@Published profilesTick` 触发 SwiftUI 重渲 |
+| `KeychainStore` | thread-safe (`enum` 静态方法) | `SecItem*` API 线程安全；任何线程都能读写 |
+| `VADActor` | `actor` | 串行化 Silero VAD 首次加载 + 缓存 `SharedVADBox`；跨 `QwenASRRecognizer` 重建存活 |
+| `LLMConfigStore.migrationFailure` | `@MainActor static` | v0.4.1 迁移失败标志；只从 main 读写（启动迁移 + AppDelegate 弹 alert） |
 
 **关键陷阱**：Carbon TIS API（`TISCopyCurrentKeyboardInputSource`、`TISSelectInputSource`）会在非主队列调用时直接 SIGTRAP。详见 devlog v0.1.0 的崩溃修复。
 
 ## 7. 持久化
 
-- 语言偏好：`UserDefaults.standard["language"]` 存 raw value（"en" / "zh-CN" 等）。AppState 在 `didSet` 中写入。
-- LLM 配置：`UserDefaults.standard["llmConfig"]` 存 JSON 序列化的 `LLMConfig`。同样在 `didSet` 中持久化。
-- Refine mode：`UserDefaults.standard["refineMode"]` 存 raw value（"off" / "conservative" / "light" / "aggressive"）。v0.2→v0.3 迁移：首次启动若无此键，从 `LLMConfig.enabled` 推断（true → conservative，false → off）。
-- Raw-first 开关：`UserDefaults.standard["rawFirstEnabled"]` 存 Bool，默认 false。
-- ASR 后端偏好：`UserDefaults.standard["asrBackend"]` 存 raw value（"whisper-large-v3" / "qwen-asr-0.6b" / "qwen-asr-1.7b"）。`AppState` init 时若发现 persisted 是 Qwen 但 MLX 不可用，自动降级到 `.default`（Whisper）。
-- 自定义词典：`~/Library/Application Support/VoiceTyping/dictionary.json`（**不**用 UserDefaults，目的是导入导出即存储、iCloud Drive 零成本同步迁移路径）。版本化 layout `{ version: 1, entries: [...] }`，debounced 5 s flush，损坏时 rename `.corrupted-<ts>.json` 空启动。详见 [`CustomDictionary.swift`](../Sources/VoiceTyping/LLM/CustomDictionary.swift)。
-- 模型缓存：`~/Library/Application Support/VoiceTyping/models/<backend-dir>/`：
+### 7.1 UserDefaults keys
+
+- `language` — Language rawValue（"en" / "zh-CN" / ...）
+- `asrBackend` — ASRBackend rawValue。`AppState` init 时若 persisted 是 Qwen 但 MLX 不可用，自动降级到 `.default`（Whisper）
+- `refineMode` — RefineMode rawValue（"off" / "conservative" / "light" / "aggressive"）。v0.2→v0.3 迁移：首次启动若无此键，从 `LLMConfig.enabled` 推断（true → conservative，false → off）
+- `rawFirstEnabled` — Bool，默认 false
+- `streamingEnabled` — Bool，默认 false（v0.4.2）
+- `llmConfig` — `LLMConfig` 的 JSON（**v0.4.1 起不含 apiKey 字段**；通过 `private enum CodingKeys` 排除）
+
+### 7.2 Keychain (v0.4.1)
+
+- service: `com.voicetyping.app`
+- account: `openai-api-key`
+- accessibility: `kSecAttrAccessibleWhenUnlocked`
+- Read/write 通过 `KeychainStore.readAPIKey / writeAPIKey / deleteAPIKey`
+- 空 key → 主动 `delete` 让 "有/无" 状态与 UserDefaults 对齐
+
+**一次性 v0.3.x → v0.4.0 迁移**：`main.swift` 在 `NSApplication.shared` 起身前调 `LLMConfigStore.migrateIfNeeded()`，用 `JSONSerialization` 读原始 JSON 查 legacy `apiKey` 字段，试写 Keychain，**无论成败都把字段从 JSON 里剥掉重写**。失败场景记在 `@MainActor migrationFailure`，启动末尾弹 alert。
+
+### 7.3 JSON 文件
+
+- `~/Library/Application Support/VoiceTyping/dictionary.json` — 自定义词典。版本化 layout `{ version: 1, entries: [...] }`，debounced 5 s flush，损坏时 rename `.corrupted-<ts>.json` 空启动。[`CustomDictionary.swift`](../Sources/VoiceTyping/LLM/CustomDictionary.swift)
+- `~/Library/Application Support/VoiceTyping/profiles.json` — per-app 上下文 profile（v0.3.1）。同样 `{ version: 1, entries: [...] }` 格式 + debounced flush + 损坏容错。[`ContextProfile.swift`](../Sources/VoiceTyping/LLM/ContextProfile.swift)
+
+### 7.4 模型缓存
+
+- ASR 模型：`~/Library/Application Support/VoiceTyping/models/<backend-dir>/`
   - `whisperkit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3/`（WhisperKit 自己会在 `downloadBase` 内加一层 `models/`）
   - `qwen-asr-0.6b/models/aufklarer/Qwen3-ASR-0.6B-MLX-4bit/`
   - `qwen-asr-1.7b/models/aufklarer/Qwen3-ASR-1.7B-MLX-8bit/`
-- v0.1.0 → v0.2.0 迁移：启动时若发现 `<modelsURL>/models/`（v0.1.0 平铺路径）存在而 `<modelsURL>/whisperkit/models/` 不存在，整体 `mv` 过去。详见 [`ModelStore.migrateV010WhisperLayoutIfNeeded`](../Sources/VoiceTyping/Support/ModelStore.swift)。
+- Silero VAD（v0.4.2）：`~/Library/Caches/huggingface/` —— **走 HF 默认缓存，不进 Application Support**。VAD 是 backend-agnostic 共享资源，分开放避免 Qwen 0.6B ↔ 1.7B 切换重下载
+- v0.1.0 → v0.2.0 迁移：启动时若发现 `<modelsURL>/models/`（v0.1.0 平铺路径）存在而 `<modelsURL>/whisperkit/models/` 不存在，整体 `mv` 过去。[`ModelStore.migrateV010WhisperLayoutIfNeeded`](../Sources/VoiceTyping/Support/ModelStore.swift)
 
 ## 8. 权限模型
 
@@ -407,7 +529,7 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 
 权限不足时：菜单顶部出现 "Grant Accessibility Permission…" / "Grant Microphone Permission…" 项，点击跳转到 `x-apple.systempreferences:` 对应面板。
 
-⚠️ ad-hoc codesign 每次重建会改变 cdhash，TCC 把它视为新应用，旧授权会失效。开发期重建后需要重新授权（或 `tccutil reset Accessibility com.voicetyping.app`）。
+**v0.4.1 起**：`make setup-cert` 一次性创建本地自签名证书（`~/Library/Keychains/voicetyping-dev.keychain-db`，预先 `security set-key-partition-list` 避免 codesign 拉 GUI "Always Allow" 提示），`make build` 用它签。cdhash 稳定 → TCC 授权跨 rebuild 保留。若证书缺失会 fallback 到 ad-hoc 签名（老行为，每次重建要重新授权）。开发期偶尔需要清 grant 时跑 `make reset-perms`。
 
 ## 9. 构建与分发
 
@@ -416,26 +538,36 @@ LLM 失败永远 **fallback 到原始转录**，不会让用户失去文本。
 | target | 作用 |
 |---|---|
 | `make setup-metal` | **一次性**：`xcodebuild -downloadComponent MetalToolchain`。Qwen (MLX) 后端需要，没装则 app 启动时默认降级到 Whisper |
+| `make setup-cert` | **一次性（v0.4.1）**：`bash Scripts/setup_cert.sh` 创建 self-signed codesigning identity 到独立 keychain，预先 `set-key-partition-list` 防 GUI 弹窗。后续 `make build` 自动发现并用它签名 → 稳定 cdhash → TCC 授权不丢 |
 | `make metallib` | 调 `scripts/build_mlx_metallib.sh` 把 MLX 的 33 个 metal kernel 编译成 `.build/release/mlx.metallib`（~100 MB） |
-| `make build` | `metallib` → `swift build -c release --arch arm64` → 复制到 `build/VoiceTyping.app/Contents/{MacOS,Resources}` → 嵌入 `mlx.metallib` → ad-hoc codesign + entitlements |
+| `make build` | `metallib` + `icons` → `swift build -c release --arch arm64` → 复制到 `build/VoiceTyping.app/Contents/{MacOS,Resources}` → 嵌入 `mlx.metallib` → codesign（优先稳定证书，缺失则 ad-hoc）+ entitlements |
 | `make run` | `make build` 后 `open` 这个 .app |
 | `make install` | 将 `build/VoiceTyping.app` 拷到 `/Applications/` |
 | `make debug` | 仅 `swift build`（不打包），用于快速 lint |
+| `make reset-perms` | **v0.4.1**：`tccutil reset Accessibility/Microphone com.voicetyping.app` 清 TCC 授权，用于测权限流或 bundle-id 变更后 |
 | `make clean` | `swift package clean` + 删除 `.build` 和 `build` |
 
-签名是 ad-hoc (`codesign --sign -`)，仅本地开发可用。entitlements 包含 `com.apple.security.device.audio-input`。Info.plist 设置 `LSUIElement=YES` 隐藏 Dock 图标。
+**签名策略（v0.4.1 起）**：Makefile 开头 `HAVE_SIGNING_IDENTITY := $(shell security find-identity ...)` 探测本地是否有名为 `VoiceTyping Dev` 的 codesigning 证书。有 → `codesign --sign "VoiceTyping Dev"`（稳定 cdhash）；无 → `codesign --sign -`（ad-hoc，老行为）。entitlements 包含 `com.apple.security.device.audio-input`。Info.plist 设置 `LSUIElement=YES` 隐藏 Dock 图标。
+
+**CI（v0.4.1 起）**：`.github/workflows/build.yml` 在 macos-15 runner 上跑 `swift build -c debug --arch arm64` 作为 PR / main push 的 smoke。macos-15 是首个默认带 Swift 6 工具链的 runner —— 我们的 `swift-tools-version: 6.0` 要求必须用它；macos-14 只有 Swift 5.10，解析 Package.swift 会报错。
 
 **MLX metallib 查找顺序**（运行时）：`Contents/MacOS/mlx.metallib` → `Resources/mlx.metallib` → SwiftPM bundle `default.metallib` → `Resources/default.metallib` → 编译时 `METAL_PATH`。我们 `cp` 到 MacOS 目录是因为它最高优先级。
 
 ## 10. 已知限制
 
 - 仅支持 Apple Silicon + macOS 15+（MLX Swift 和 `soniqo/speech-swift` 要求）。Intel Mac / Sonoma 留在 v0.1.x。
-- 首次加载对应后端需要下载（Whisper ~3 GB / Qwen-1.7B ~1.4 GB / Qwen-0.6B ~400 MB）。
+- 首次加载对应后端需要下载（Whisper ~3 GB / Qwen-1.7B ~1.4 GB / Qwen-0.6B ~400 MB）。流式首次启用额外下载 Silero VAD（~2 MB）。
 - Metal Toolchain 未装时 Qwen 后端不可用（但 app 不再崩，降级到 Whisper）。
-- ad-hoc 签名导致 TCC 授权在重建后失效。
+- 首次运行没跑 `make setup-cert` 时仍是 ad-hoc 签名，TCC 授权重建失效；跑过一次后稳定。
 - Fn 监听仅基于 `kCGEventFlagsChanged.maskSecondaryFn`，未处理 NX_SYSDEFINED 系统事件子类型（部分外接键盘可能用此路径）。
-- 录音长度安全上限 60 秒（[`AudioCapture.maxDuration`](../Sources/VoiceTyping/Audio/AudioCapture.swift)）。录音 < 400 samples（25 ms）会被 guard 拦截，不送 ASR（防 `WhisperFeatureExtractor` 空数组索引越界）。
+- 录音长度安全上限 60 秒（[`AudioCapture.maxDuration`](../Sources/VoiceTyping/Audio/AudioCapture.swift)）。录音 < 400 samples（25 ms）会被 guard 拦截，不送 ASR（防 `WhisperFeatureExtractor` 空数组索引越界）。**流式模式绕开 Qwen per-segment `maxTokens: 448` 限**（VAD 切段后每段 <10s），但 60s 录音硬上限仍在 —— 真 live-mic 解这个限是 v0.5 的事。
 - WhisperKit 的下载进度是 indeterminate（上游 API 不暴露），只有 Qwen 后端有实时百分比。
 - 词典软上限 500 条（非硬 cap），真正限制是注入时的 token budget（Whisper 200 / Qwen 460 / LLM 1500）。
 - Qwen context 是声学锚定而非发音替换——"配森→Python"类跨语种重写由 LLM refiner 的 glossary `Rewrite` 段处理，不是 ASR 的职责。
 - Raw-first 在 Electron / Web 嵌入式输入框里的 focus 判定准确性未充分验证（v0.3.0 风险项）。
+- **流式转录（v0.4.2）限制**：
+  - 仅 Qwen backend；Whisper 下 Settings toggle 自动禁用（上游不支持）
+  - **Post-record，不是真 live-mic**：用户看到文字逐段浮现发生在 Fn 松开之后；Fn 按住时胶囊仍只显示 Morse 动画
+  - **注入依然 commit-on-end**：流式只影响胶囊显示，不做段级 progressive inject（避免和用户 focused app 里打字干扰 + 跨段空格 / undo chain 错乱）
+  - VAD 可能在长静默处切段，"I don't know 那个事情" 理论上可能被切成两段丢 code-switch context；对极短 burst（<500ms）Qwen 偶发幻觉（把 "ask not" 当成独立段时可能 decode 成无关词）。这是 Option A 的固有 tradeoff
+  - Silero VAD 首次下载失败 → streaming stream 直接 error 结束 → AppDelegate catch 里打 log 隐藏胶囊，**无专门 UI 提示**（设计简化，后续若常见再加）

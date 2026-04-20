@@ -15,7 +15,13 @@ SIGNING_IDENTITY ?= VoiceTyping Dev
 # the stable cdhash, not the trust chain.
 HAVE_SIGNING_IDENTITY := $(shell security find-identity -p codesigning 2>/dev/null | grep -q "\"$(SIGNING_IDENTITY)\"" && echo yes || echo no)
 
-.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms
+.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e
+
+# Test bundle path produced by `swift build --build-tests`. E2E tests need
+# `mlx.metallib` copied next to this binary so `Bundle.main.executableURL`'s
+# directory contains the shaders (same mechanism as the release app bundle).
+TEST_BUNDLE_MACOS := .build/arm64-apple-macosx/debug/VoiceTypingPackageTests.xctest/Contents/MacOS
+FIXTURE_ROOT := $(shell pwd)/Tests/Fixtures
 
 build: metallib icons
 	swift build -c release --arch arm64
@@ -104,3 +110,29 @@ reset-perms:
 	-tccutil reset Accessibility com.voicetyping.app
 	-tccutil reset Microphone   com.voicetyping.app
 	@echo "✓ Reset TCC for com.voicetyping.app"
+
+# Fast regression loop: unit tests only (no fixtures, no model download).
+# Matches what CI runs. E2E tests filtered out by `--skip E2E`.
+test:
+	VT_FIXTURE_ROOT=$(FIXTURE_ROOT) swift test --skip E2E --arch arm64
+
+# Full regression: unit + E2E. Requires Qwen model already downloaded to
+# `~/Library/Application Support/VoiceTyping/models/` (launch the app once
+# to trigger). Silero VAD downloads on first run (~2 MB).
+#
+# Stages mlx.metallib into the test bundle so MLX kernels can find it —
+# Bundle.main.executableURL in the test process points at the xctest binary,
+# not the app bundle, so without this copy MLXSupport.isAvailable's path
+# check misses it.
+test-e2e: metallib
+	swift build --build-tests --arch arm64
+	@if [ -f $(MLX_METALLIB) ]; then \
+	  cp $(MLX_METALLIB) $(TEST_BUNDLE_MACOS)/mlx.metallib; \
+	  echo "  staged mlx.metallib → $(TEST_BUNDLE_MACOS)/"; \
+	else \
+	  echo "  [warn] $(MLX_METALLIB) missing — run 'make setup-metal'"; \
+	  exit 1; \
+	fi
+	VT_FIXTURE_ROOT=$(FIXTURE_ROOT) \
+	VT_MLX_TEST_READY=1 \
+	swift test --arch arm64

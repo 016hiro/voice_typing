@@ -1,0 +1,10 @@
+{
+  "keywords": [
+    "cosette",
+    "unknown"
+  ],
+  "minChars": 25,
+  "maxChars": 358,
+  "language": "en",
+  "streamingMinPartials": 1
+}

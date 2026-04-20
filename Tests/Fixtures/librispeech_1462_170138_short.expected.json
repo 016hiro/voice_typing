@@ -1,0 +1,10 @@
+{
+  "keywords": [
+    "interior",
+    "entered"
+  ],
+  "minChars": 42,
+  "maxChars": 520,
+  "language": "en",
+  "streamingMinPartials": 1
+}

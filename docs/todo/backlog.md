@@ -14,14 +14,15 @@
 
 - [x] ~~**稳定签名（解决 TCC 重新授权问题）**：`make setup-cert` 创建本地自签名证书 → `make build` 用它签名。这样 cdhash 跨重建稳定，TCC 授权不丢。~~ 已在 v0.4.1 落地，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。
 - [x] ~~**`make reset-perms` target**~~ 已在 v0.4.1 落地。
-- [x] ~~**CI 检查**：GitHub Actions 跑 `swift build`~~ 已在 v0.4.1 落地（`swift build -c debug` smoke；`swift test` 等有了 test 套件再加）。
+- [x] ~~**CI 检查**：GitHub Actions 跑 `swift build`~~ 已在 v0.4.1 落地。`swift test --skip E2E` 已在 v0.4.3 加进 CI。
+- [x] ~~**回归测试台**：固定 fixture WAV，每次 ASR 改动跑 batch + streaming 对比~~ 已在 v0.4.3 落地（`make test` / `make test-e2e`，JFK PD 英文 + 9 条 LibriSpeech + 用户录中文），详见 [../devlog/v0.4.3.md](../devlog/v0.4.3.md)。
 
 ### 功能扩展
 
 - [ ] **快捷键可配置**：除 Fn 外提供 Right Option / Right Cmd 等替代方案；Settings 窗口加 hotkey picker。
 - [ ] **历史转录记录**：可选保存最近 N 条转录到 Settings → History 标签，支持复制/重新发送。
 
-> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。Post-record 流式 (opt-in experimental) 已落地在 v0.4.2，详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。
+> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。Post-record 流式 (opt-in experimental) 已落地在 v0.4.2，详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。Unit + E2E ASR 回归测试台已落地在 v0.4.3，详见 [../devlog/v0.4.3.md](../devlog/v0.4.3.md)。
 
 ## 中期 (v0.4+)
 

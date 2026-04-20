@@ -172,7 +172,8 @@ final class AppState: ObservableObject {
 
     /// Keep the most recent characters visible when the streaming transcript
     /// overflows the capsule width, so the latest segment stays on screen.
-    private static func tailTruncated(_ s: String, max: Int) -> String {
+    /// Internal (not private) so unit tests can call it directly via `@testable import`.
+    static func tailTruncated(_ s: String, max: Int) -> String {
         guard s.count > max else { return s }
         return "…\(s.suffix(max))"
     }

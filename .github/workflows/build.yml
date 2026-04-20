@@ -44,3 +44,11 @@ jobs:
 
       - name: swift build -c debug
         run: swift build -c debug --arch arm64
+
+      - name: swift test --skip E2E
+        # Runs unit tests only. E2E tests require Qwen model weights (~1.4 GB)
+        # and MLX metallib staging — both out of scope for a free CI runner.
+        # Local devs get full coverage via `make test-e2e`.
+        env:
+          VT_FIXTURE_ROOT: ${{ github.workspace }}/Tests/Fixtures
+        run: swift test --skip E2E --arch arm64

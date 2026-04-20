@@ -1,0 +1,10 @@
+{
+  "keywords": [
+    "quilter",
+    "apostle"
+  ],
+  "minChars": 26,
+  "maxChars": 367,
+  "language": "en",
+  "streamingMinPartials": 1
+}

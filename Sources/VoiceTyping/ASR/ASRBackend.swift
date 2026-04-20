@@ -69,7 +69,13 @@ public enum ASRBackend: String, CaseIterable, Codable, Sendable, Identifiable {
 /// Detects whether `mlx.metallib` is colocated with the executable so MLX can load.
 /// Without it, calling into MLX aborts the whole process via a C++ exception.
 enum MLXSupport {
+    /// Tests set this after the `make test-e2e` prep step copies `mlx.metallib`
+    /// next to the test binary (`Bundle.main.executableURL` points at the XCTest
+    /// runner, not the app bundle, so the path check below misses it).
+    nonisolated(unsafe) static var overrideAvailable: Bool?
+
     static var isAvailable: Bool {
+        if let override = overrideAvailable { return override }
         guard let exec = Bundle.main.executableURL else { return false }
         let candidates = [
             exec.deletingLastPathComponent().appendingPathComponent("mlx.metallib"),

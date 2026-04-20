@@ -1,0 +1,11 @@
+{
+  "keywords": [
+    "interesting",
+    "unnecessary",
+    "landscapes"
+  ],
+  "minChars": 279,
+  "maxChars": 2896,
+  "language": "en",
+  "streamingMinPartials": 2
+}

@@ -1,0 +1,7 @@
+{
+  "keywords": [],
+  "minChars": 5,
+  "maxChars": 50,
+  "language": "zh-CN",
+  "streamingMinPartials": 1
+}

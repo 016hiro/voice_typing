@@ -1,0 +1,7 @@
+{
+  "keywords": ["Americans", "country"],
+  "minChars": 50,
+  "maxChars": 300,
+  "language": "en",
+  "streamingMinPartials": 1
+}

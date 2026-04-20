@@ -39,6 +39,10 @@ make run          # build + launch
 make install      # copies to /Applications
 make clean
 make reset-perms  # dev: tccutil reset Microphone + Accessibility for this bundle
+make test         # unit tests only (fast, no fixtures / models needed). Runs in CI.
+make test-e2e     # full regression: unit + ASR on audio fixtures. Requires MLX
+                  # metallib + Qwen model downloaded. See Tests/Fixtures/README.md
+                  # for how to add fixtures (self-record or public corpora).
 ```
 
 On first launch, grant **Microphone** and **Accessibility** permissions when prompted. The default ASR model downloads in the background; progress shown in the menu bar. You can switch models anytime via the menu — cached models don't re-download.
