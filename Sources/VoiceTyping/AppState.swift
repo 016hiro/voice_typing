@@ -38,6 +38,13 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(rawFirstEnabled, forKey: "rawFirstEnabled") }
     }
 
+    /// v0.4.2 experimental: route transcription through VAD-segmented streaming
+    /// so the capsule reveals text progressively and long (>60s) recordings work.
+    /// Qwen backends only — Whisper has no streaming path. Off by default.
+    @Published var streamingEnabled: Bool {
+        didSet { UserDefaults.standard.set(streamingEnabled, forKey: "streamingEnabled") }
+    }
+
     /// v0.3 custom vocabulary. Persisted via `CustomDictionary` to a JSON file.
     let dictionary = CustomDictionary()
 
@@ -89,6 +96,7 @@ final class AppState: ObservableObject {
         }
 
         self.rawFirstEnabled = ud.object(forKey: "rawFirstEnabled") as? Bool ?? false
+        self.streamingEnabled = ud.object(forKey: "streamingEnabled") as? Bool ?? false
 
         let backendRaw = ud.string(forKey: "asrBackend")
         let persisted = backendRaw.flatMap { ASRBackend(rawValue: $0) } ?? .default
@@ -151,11 +159,21 @@ final class AppState: ObservableObject {
         case .idle, .recording:
             return capsuleText.isEmpty ? "Listening" : capsuleText
         case .transcribing:
-            return capsuleText.isEmpty ? "Transcribing" : capsuleText
+            if capsuleText.isEmpty { return "Transcribing" }
+            // Capsule has ~400pt for text after the Morse indicator; mono 16pt with
+            // tracking(2) is ~12pt/char, so 30 chars is the practical width cap.
+            return Self.tailTruncated(capsuleText, max: 30)
         case .refining:
             return "Refining"
         case .info(let msg):
             return msg
         }
+    }
+
+    /// Keep the most recent characters visible when the streaming transcript
+    /// overflows the capsule width, so the latest segment stays on screen.
+    private static func tailTruncated(_ s: String, max: Int) -> String {
+        guard s.count > max else { return s }
+        return "…\(s.suffix(max))"
     }
 }

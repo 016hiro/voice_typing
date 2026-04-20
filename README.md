@@ -5,11 +5,12 @@ A macOS menu-bar voice input app. Hold **Fn** to dictate, release to paste the t
 - Default language: Simplified Chinese (zh-CN). Also supports English, Traditional Chinese, Japanese, Korean.
 - Swappable local ASR backend (select from the menu):
   - **Qwen3-ASR 1.7B** (MLX, ~1.4 GB) — SOTA open-source ASR, beats Whisper-large-v3 on multilingual benchmarks. Default when MLX is available.
-  - **Qwen3-ASR 0.6B** (MLX, ~400 MB) — faster, lighter; intended for future streaming mode
+  - **Qwen3-ASR 0.6B** (MLX, ~400 MB) — faster, lighter; pairs well with the experimental streaming toggle below
   - **Whisper large-v3** (WhisperKit, ~3 GB) — fallback when the Metal Toolchain (required by MLX) isn't installed
 - Four-level LLM refinement (OpenAI-compatible API): `off` / `conservative` (default, fix misrecognitions only) / `light` (also removes fillers & stutters) / `aggressive` (also formats lists & lightly polishes wording). Fails soft — never loses text.
 - **Custom dictionary** with dual-layer injection: term-only entries anchor ASR spelling (Qwen context + Whisper prompt), `term + pronunciations` entries also produce rewrite rules in the LLM glossary. LRU-ranked, token-budgeted, persisted to JSON.
 - Optional **Raw-first inject** mode: pastes raw ASR instantly, then replaces with refined text once the LLM returns (only if the user hasn't moved on). Trades a visible flicker for lower perceived latency.
+- Optional **Streaming transcription** (experimental, Qwen3 only): VAD-segmented ASR so the capsule reveals transcript progressively and long recordings can be transcribed past the per-segment token cap. Injection still happens once at the end — the streaming shows in the HUD, not in the focused textfield. First use downloads Silero VAD (~2 MB).
 - Transparent A10 Morse-rhythm HUD — seven staggered bars pulsing beside a monospace label ("Listening" / "Transcribing" / "Refining"), dual-halo shadow so it reads over any background.
 - Original app icon family — 10 macOS-style designs generated from `Scripts/generate_icons.swift`; swap the active design with `make icons ICON=NN && make build`.
 - Pasteboard + Cmd+V injection with CJK IME detection and temporary switch to ASCII.

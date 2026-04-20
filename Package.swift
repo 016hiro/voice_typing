@@ -19,7 +19,8 @@ let package = Package(
             dependencies: [
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Qwen3ASR", package: "speech-swift"),
-                .product(name: "AudioCommon", package: "speech-swift")
+                .product(name: "AudioCommon", package: "speech-swift"),
+                .product(name: "SpeechVAD", package: "speech-swift")
             ],
             path: "Sources/VoiceTyping",
             linkerSettings: [

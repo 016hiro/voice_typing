@@ -572,6 +572,13 @@ private struct ModelsTab: View {
 
     @State private var pendingDelete: ASRBackend?
 
+    private var streamingDescription: String {
+        if !state.asrBackend.isQwen {
+            return "Only Qwen3 backends stream. Switch to a Qwen model to enable."
+        }
+        return "VAD-segmented ASR. Text appears progressively and recordings can exceed 60s. First use downloads Silero VAD (~2 MB)."
+    }
+
     var body: some View {
         VStack(spacing: 14) {
             SectionCard(title: "Speech Recognition Model") {
@@ -594,6 +601,22 @@ private struct ModelsTab: View {
                     .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(LG.textDim)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            SectionCard(title: "Streaming (experimental)") {
+                Toggle(isOn: $state.streamingEnabled) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Show transcript as it forms")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(LG.text)
+                            .fx()
+                        Text(streamingDescription)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(LG.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .disabled(!state.asrBackend.isQwen)
             }
         }
         .alert("Delete \(pendingDelete?.displayName ?? "") files?",

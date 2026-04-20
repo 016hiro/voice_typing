@@ -21,13 +21,14 @@
 - [ ] **快捷键可配置**：除 Fn 外提供 Right Option / Right Cmd 等替代方案；Settings 窗口加 hotkey picker。
 - [ ] **历史转录记录**：可选保存最近 N 条转录到 Settings → History 标签，支持复制/重新发送。
 
-> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。
+> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。Post-record 流式 (opt-in experimental) 已落地在 v0.4.2，详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。
 
 ## 中期 (v0.4+)
 
 - [ ] ~~**中英自动语种检测**~~：Qwen3-ASR 原生就支持中英混合输入（2026-04-18 实测 zh-CN hint 下混读英文仍转写正确）。保留 Whisper backend 的场景：它 code-switch 弱，仍需要语言选择 UI。v0.4.0 不再拿它做主线。
-- [ ] **流式转录**（v0.4.0 旗舰候选）：长录音边录边出文，胶囊实时显示部分结果。Qwen-0.6B 的 92ms TTFT 在这里才真正有用。上游 `soniqo/speech-swift` 0.0.9 已有 `StreamingASR` + 内置 Silero VAD（`AsyncThrowingStream<TranscriptionSegment>`）；真实时得直接用底层 `StreamingVADProcessor` + `Qwen3ASRModel.transcribe` 自己拼 live mic → VAD → ASR 的胶水。
-- [ ] **VAD 自动停止**（流式副产品）：除 Fn 松开外，检测到长时间静默自动结束录音。
+- [x] ~~**流式转录 (post-record)**~~：v0.4.2 落地 opt-in experimental，VAD 分段 + 段级 Qwen 转写 + progressive 胶囊显示。详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。真 live-mic 留到下一项。
+- [ ] **真 live-mic 流式**（v0.5 / Step 3 候选）：v0.4.2 是 post-record（Fn 松开后才开始逐段吐）；live 要 AudioRecorder 边录边推 chunk 给 `StreamingVADProcessor`，`.speechEnded` 触发 `Qwen3ASRModel.transcribe`。需要解 `AudioCapture.maxDuration` 60s 硬限 + 段级取消语义 + Fn 中途松开对 in-flight 段的 ACK。
+- [ ] **VAD 自动停止**（live-mic 副产品）：除 Fn 松开外，检测到长时间静默自动结束录音。v0.5 live mic 稳定后评估。
 - [ ] **更多 ASR 后端**：
   - whisper.cpp 实现（Intel Mac 支持 + 量化模型选项）
   - Apple SFSpeechRecognizer 实现（无依赖、零下载、低延迟，但中英混杂效果差）

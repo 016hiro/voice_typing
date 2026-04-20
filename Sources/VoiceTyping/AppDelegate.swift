@@ -312,6 +312,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mode = state.refineMode
         let llmConfig = state.llmConfig
         let rawFirst = state.rawFirstEnabled
+        // Streaming is opt-in and Whisper has no streaming engine. If the toggle is on but
+        // the active backend is Whisper, fall through to the batch path silently — the
+        // Settings UI already disables the toggle in that case.
+        let useStreaming = state.streamingEnabled && backend.isQwen
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let asrContext = GlossaryBuilder.buildForASR(backend, entries: dictEntries, language: language)
         let profile = state.profiles.lookup(bundleID: frontmostBundleID)
@@ -335,10 +339,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tracker.mark(.asrStart)
             var transcript = ""
             do {
-                transcript = try await self.recognizer.transcribe(
-                    buffer,
+                transcript = try await self.runASR(
+                    buffer: buffer,
                     language: language,
-                    context: asrContext
+                    context: asrContext,
+                    useStreaming: useStreaming
                 )
             } catch {
                 Log.app.error("Transcribe failed: \(error.localizedDescription, privacy: .public)")
@@ -387,6 +392,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+    }
+
+    /// Dispatches to the streaming or batch recognizer call, updating `capsuleText` with
+    /// each partial transcript so the user sees the text form. Returns the final transcript.
+    /// Streaming is Qwen-only — Whisper falls through to the batch path.
+    private func runASR(
+        buffer: AudioBuffer,
+        language: Language,
+        context: String?,
+        useStreaming: Bool
+    ) async throws -> String {
+        if useStreaming, let qwen = recognizer as? QwenASRRecognizer {
+            var latest = ""
+            for try await partial in qwen.transcribeStreaming(
+                buffer, language: language, context: context
+            ) {
+                latest = partial
+                await MainActor.run {
+                    // Only update while we're still in the transcribing phase; if the
+                    // pipeline was cancelled and moved on, ignore late yields.
+                    if self.state.status == .transcribing {
+                        self.state.capsuleText = partial
+                    }
+                }
+            }
+            return latest
+        }
+        return try await self.recognizer.transcribe(
+            buffer, language: language, context: context
+        )
     }
 
     /// Classic v0.2-shaped pipeline: transcribe → (optional refine) → paste once.
