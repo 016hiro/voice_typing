@@ -45,6 +45,20 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(streamingEnabled, forKey: "streamingEnabled") }
     }
 
+    /// v0.5.0 experimental: true live-mic transcription. ASR runs while you
+    /// hold Fn (per VAD-detected segment) instead of waiting until release;
+    /// perceived post-release latency drops from `ASR(total_audio)` to
+    /// `ASR(last_segment) + drain`.
+    ///
+    /// No Settings UI yet — toggle via:
+    ///   `defaults write com.voicetyping.app liveStreamingEnabled -bool true`
+    /// Will get a UI toggle once dogfood data confirms VAD quality on real
+    /// mic noise matches what fixtures showed (the v0.5.0 release plan).
+    /// Qwen backends only; takes precedence over `streamingEnabled` when on.
+    @Published var liveStreamingEnabled: Bool {
+        didSet { UserDefaults.standard.set(liveStreamingEnabled, forKey: "liveStreamingEnabled") }
+    }
+
     /// v0.4.4: unlocks the `Log.dev(...)` call sites (setup / bias / profile
     /// diagnostics) and shows them in `log stream` without `--level info`.
     /// Off by default — keep user-facing log output quiet unless someone is
@@ -108,6 +122,7 @@ final class AppState: ObservableObject {
 
         self.rawFirstEnabled = ud.object(forKey: "rawFirstEnabled") as? Bool ?? false
         self.streamingEnabled = ud.object(forKey: "streamingEnabled") as? Bool ?? false
+        self.liveStreamingEnabled = ud.object(forKey: "liveStreamingEnabled") as? Bool ?? false
 
         let dev = ud.bool(forKey: "developerMode")
         self.developerMode = dev

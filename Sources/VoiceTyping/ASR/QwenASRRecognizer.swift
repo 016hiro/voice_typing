@@ -160,6 +160,26 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
         // runs to completion. Nothing actionable here.
     }
 
+    /// Synchronous segment transcription used by `LiveTranscriber`. Caller is
+    /// responsible for being off the main thread. Acquires `transcribeLock`
+    /// per call so live segments interleave safely with the (rare) batch
+    /// transcribe — no lock held across awaits.
+    ///
+    /// Returns `""` if the model isn't loaded or the segment is shorter than
+    /// one FFT window (400 samples); both conditions are silently dropped
+    /// rather than throwing because mid-stream errors would tear down the
+    /// live session for what's typically a transient or trivial cause.
+    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> String {
+        guard samples.count >= 400 else { return "" }
+        return transcribeLock.withLock { () -> String in
+            guard let model = self.model else { return "" }
+            return model.transcribe(
+                audio: samples, sampleRate: 16000,
+                language: language, maxTokens: 448, context: context
+            )
+        }
+    }
+
     /// Free model weights. Called when the backend is being swapped out.
     public func unload() {
         transcribeLock.withLock {
@@ -217,19 +237,27 @@ public extension QwenASRRecognizer {
         /// baseline so the benchmark and any opt-out caller can compare.
         public static let `default` = StreamingTuning()
 
-        /// v0.4.5 shipping defaults: `minSpeech 0.3s, minSilence 0.7s, no padding`.
-        /// Validated by `make benchmark-vad` — same average similarity to batch
-        /// (~99 %), 17 % lower latency, segment count cut from 3.3 to 1.4 per
-        /// fixture, and recovers the leading word that `0.5s` was dropping.
-        /// Used by `AppDelegate.runASR`'s streaming path.
+        /// v0.5.0 shipping defaults: `minSpeech 0.3s, minSilence 0.7s, no padding,
+        /// force-split 25s`.
+        ///
+        /// History:
+        /// - v0.4.5 picked `(0.3, 0.7, 0)` over Silero's `(0.25, 0.10)` after the
+        ///   benchmark showed ~99 % similarity to batch + 17 % lower latency + 3.3 → 1.4
+        ///   partials per fixture, and recovered a leading word `0.5s` was dropping.
+        /// - v0.5.0 raised `maxSegmentDuration` 10 → 25. Qwen3-ASR's actual hard
+        ///   cap is 1200 s (`AudioPreprocessing.swift:304`); the practical cap is
+        ///   `maxTokens=448` which 25 s of speech (~120-150 output tokens) sits
+        ///   well inside. A user talking continuously for 15-20 s used to take a
+        ///   force-split mid-word at 10 s; raising the threshold avoids that for
+        ///   nearly all natural utterances. Validated by `make benchmark-vad`.
         public static let production = StreamingTuning(
             minSpeechDuration: 0.3,
             minSilenceDuration: 0.7,
             paddingSeconds: 0,
-            maxSegmentDuration: 10.0
+            maxSegmentDuration: 25.0
         )
 
-        fileprivate func buildVADConfig() -> VADConfig {
+        internal func buildVADConfig() -> VADConfig {
             var cfg = VADConfig.sileroDefault
             if let m = minSpeechDuration { cfg.minSpeechDuration = m }
             if let m = minSilenceDuration { cfg.minSilenceDuration = m }

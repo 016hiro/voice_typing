@@ -10,8 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let refiner = LLMRefiner()
     let fnMonitor = FnHotkeyMonitor()
 
-    private var recognizer: SpeechRecognizer!
-    private var activeBackend: ASRBackend = .default
+    // Internal (not private) so AppDelegate+Live.swift can read them when
+    // setting up the live transcriber at Fn↓.
+    var recognizer: SpeechRecognizer!
+    var activeBackend: ASRBackend = .default
 
     lazy var statusController: StatusItemController = {
         let c = StatusItemController(state: state)
@@ -45,6 +47,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var infoResetTask: Task<Void, Never>?
     private var backendSwapTask: Task<Void, Never>?
     private var appActivationObserver: NSObjectProtocol?
+
+    // MARK: - Live transcriber state (v0.5.0)
+    //
+    // Mutated only on the main actor. Lifetime: set at Fn↓ in
+    // `startLiveTranscriberIfEnabled`, moved into a local in `stopRecording`'s
+    // pipelineTask, then cleared. `cachedVADBox` survives across runs so live
+    // setup at Fn↓ is synchronous (no awaits → no race with rapid Fn↑).
+
+    var activeLiveTranscriber: LiveTranscriber?
+    var liveIngestTask: Task<Void, Never>?
+    var liveSnapshot: LiveRunSnapshot?
+    var cachedVADBox: SharedVADBox?
+
+    /// ASR-side state captured at Fn↓ when live mode is on. Refine/inject
+    /// snapshots still happen at Fn↑ (latest user choice). Held early so the
+    /// live transcribe and the dictionary-hit detection use a consistent
+    /// dictEntries snapshot even if the user edits the dictionary mid-recording.
+    struct LiveRunSnapshot {
+        let backend: ASRBackend
+        let language: Language
+        let dictEntries: [DictionaryEntry]
+        let asrContext: String?
+        let frontmostBundleID: String?
+        let profileSnippet: String?
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ModelStore.migrateV010WhisperLayoutIfNeeded()
@@ -199,6 +226,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Pre-warm Silero VAD for live-mic streaming. Loaded lazily via
+        // `vadActor.get()`, but the live setup at Fn↓ needs it sync to avoid
+        // a race where Fn↑ fires before VAD is ready. Fire-and-forget — if
+        // it fails (e.g. SpeechVAD bundle missing in dev build), live mode
+        // simply falls back to batch this run.
+        if backend.isQwen {
+            Task.detached { [weak self] in
+                do {
+                    let box = try await QwenASRRecognizer.vadActor.get()
+                    await MainActor.run { [weak self] in
+                        self?.cachedVADBox = box
+                        Log.dev(Log.app, "Live: VAD pre-warmed and cached")
+                    }
+                } catch {
+                    Log.app.warning("Live: VAD pre-warm failed (\(error.localizedDescription, privacy: .public)) — live mode will fall back to batch")
+                }
+            }
+        }
+
         // Bump inventory so UI re-reads state.
         state.modelInventoryTick &+= 1
     }
@@ -272,11 +318,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // Decide live mode up-front so we can pass the right maxDuration cap
+        // (live mode tolerates long sessions; batch caps at 60 s to bound
+        // single-shot Qwen.transcribe risk).
+        let useLive = state.liveStreamingEnabled
+            && activeBackend.isQwen
+            && (recognizer is QwenASRRecognizer)
+            && cachedVADBox != nil
+        let cap: TimeInterval = useLive ? 600 : 60
+
         do {
-            let levels = try audio.start()
+            let outputs = try audio.start(maxDuration: cap)
             state.status = .recording
             infoResetTask?.cancel()
-            capsuleWindow.show(levels: levels)
+            capsuleWindow.show(levels: outputs.levels)
+            // Live wiring (no-op when useLive is false — drains samples to /dev/null).
+            startLiveTranscriberIfEnabled(samples: outputs.samples, useLive: useLive)
         } catch {
             Log.app.error("Audio start failed: \(error.localizedDescription, privacy: .public)")
             flashInfo(message(for: .micFailed), autoHide: true)
@@ -298,34 +355,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (~400 samples @ 16 kHz ≈ 25 ms); feeding less crashes the process.
         if buffer.samples.count < 400 {
             Log.app.info("stopRecording: buffer too short (\(buffer.samples.count, privacy: .public) samples), skipping ASR")
+            cleanUpLiveState()
             flashInfo(message(for: .noSpeech), autoHide: true)
             return
         }
 
-        // Snapshot everything that affects this pipeline run so later mutations
-        // (user edits the dictionary, switches refine mode, etc.) don't corrupt
-        // the in-flight transcription.
-        let backend = activeBackend
-        let language = state.language
-        let dictEntries = state.dictionary.entries
+        // Move the live-mode handle off the field so the next Fn cycle starts
+        // from a clean slate. nil out before launching the pipelineTask so a
+        // reentrant startRecording can't see stale state.
+        let liveTranscriber = activeLiveTranscriber
+        let liveIngest = liveIngestTask
+        let liveSnap = liveSnapshot
+        activeLiveTranscriber = nil
+        liveIngestTask = nil
+        liveSnapshot = nil
+
+        // ASR-side state: live mode uses the early snapshot (captured at Fn↓);
+        // batch mode snapshots at Fn↑. Refine/inject snapshots are always Fn↑.
+        let backend: ASRBackend
+        let language: Language
+        let dictEntries: [DictionaryEntry]
+        let asrContext: String?
+        let frontmostBundleID: String?
+        let profileSnippet: String?
+        if let snap = liveSnap {
+            backend = snap.backend
+            language = snap.language
+            dictEntries = snap.dictEntries
+            asrContext = snap.asrContext
+            frontmostBundleID = snap.frontmostBundleID
+            profileSnippet = snap.profileSnippet
+        } else {
+            backend = activeBackend
+            language = state.language
+            dictEntries = state.dictionary.entries
+            frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            asrContext = GlossaryBuilder.buildForASR(backend, entries: dictEntries, language: language)
+            let profile = state.profiles.lookup(bundleID: frontmostBundleID)
+            profileSnippet = profile?.systemPromptSnippet
+            if let profile {
+                Log.dev(Log.app, "Context profile: \(profile.name) (bundle=\(profile.bundleID))")
+            }
+        }
         let mode = state.refineMode
         let llmConfig = state.llmConfig
         let rawFirst = state.rawFirstEnabled
         // Streaming is opt-in and Whisper has no streaming engine. If the toggle is on but
         // the active backend is Whisper, fall through to the batch path silently — the
-        // Settings UI already disables the toggle in that case.
+        // Settings UI already disables the toggle in that case. Irrelevant when live
+        // mode is on (live takes precedence and produces its own transcript).
         let useStreaming = state.streamingEnabled && backend.isQwen
-        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let asrContext = GlossaryBuilder.buildForASR(backend, entries: dictEntries, language: language)
-        let profile = state.profiles.lookup(bundleID: frontmostBundleID)
-        let profileSnippet = profile?.systemPromptSnippet
         if let ctx = asrContext {
             Log.dev(Log.app, "ASR bias: backend=\(backend.rawValue) entries=\(dictEntries.count) context=\(ctx)")
         } else {
             Log.dev(Log.app, "ASR bias: none (entries=\(dictEntries.count), backend=\(backend.rawValue))")
-        }
-        if let profile {
-            Log.dev(Log.app, "Context profile: \(profile.name) (bundle=\(profile.bundleID))")
         }
 
         let tracker = LatencyTracker()
@@ -338,12 +421,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tracker.mark(.asrStart)
             var transcript = ""
             do {
-                transcript = try await self.runASR(
-                    buffer: buffer,
-                    language: language,
-                    context: asrContext,
-                    useStreaming: useStreaming
-                )
+                if let lt = liveTranscriber {
+                    // Live: wait for samples drain (audio.stop() finished the
+                    // upstream stream), tell LiveTranscriber to flush + drain
+                    // its own ASR queue, then read the final accumulated text.
+                    await liveIngest?.value
+                    lt.finish()
+                    for try await text in lt.output {
+                        transcript = text
+                    }
+                    Log.dev(Log.asr, "Live drain returned \(transcript.count) chars")
+                } else {
+                    transcript = try await self.runASR(
+                        buffer: buffer,
+                        language: language,
+                        context: asrContext,
+                        useStreaming: useStreaming
+                    )
+                }
             } catch {
                 Log.app.error("Transcribe failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -586,4 +681,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    // MARK: - Live transcriber (v0.5.0)
+    //
+    // Definitions live in `AppDelegate+Live.swift` so the live-streaming wiring
+    // (LiveTranscriber lifecycle, samples ingest task, snapshot capture) stays
+    // separable from the post-record batch pipeline above.
 }

@@ -34,14 +34,34 @@ public final class AudioCapture: @unchecked Sendable {
     private var accumulator: [Float] = []
 
     private var levelsContinuation: AsyncStream<Float>.Continuation?
+    private var samplesContinuation: AsyncStream<[Float]>.Continuation?
 
     private var startedAt: Date = .distantPast
-    public let maxDuration: TimeInterval = 60.0
+    /// Hard cap on recording length, set per-`start()`. Default 60 s (the v0.4.x
+    /// batch behavior — protects against stuck Fn / buggy hotkey causing
+    /// runaway recording + downstream OOM in single-shot Qwen.transcribe).
+    /// Live-mic mode passes a larger value (600 s) since segments transcribe
+    /// as they arrive — long sessions don't consume resources proportionally.
+    public private(set) var maxDuration: TimeInterval = 60.0
 
     public init() {}
 
-    /// Starts the engine and returns a stream of normalized RMS levels (0...1).
-    public func start() throws -> AsyncStream<Float> {
+    public struct StartOutputs {
+        /// Normalized RMS levels (0…1) emitted on the audio thread for the capsule waveform.
+        public let levels: AsyncStream<Float>
+        /// Converted 16 kHz mono Float32 samples, chunked at the native tap buffer rate
+        /// (~341 samples per yield from a 48 kHz source). Used by `LiveTranscriber` —
+        /// caller doesn't need to subscribe if not running live mode.
+        public let samples: AsyncStream<[Float]>
+    }
+
+    /// Starts the engine and returns the live `levels` and `samples` streams. Both
+    /// streams finish when `stop()` is called.
+    /// - Parameter maxDuration: Hard cap on recording length (default 60 s).
+    ///   After this, the accumulator stops growing and the samples stream stops
+    ///   yielding, but levels keep emitting so the waveform stays visually alive.
+    public func start(maxDuration: TimeInterval = 60.0) throws -> StartOutputs {
+        self.maxDuration = maxDuration
         let node = engine.inputNode
         let inFmt = node.outputFormat(forBus: 0)
         self.inputFormat = inFmt
@@ -58,8 +78,15 @@ public final class AudioCapture: @unchecked Sendable {
 
         startedAt = Date()
 
-        let (stream, continuation) = AsyncStream<Float>.makeStream(bufferingPolicy: .bufferingNewest(8))
-        self.levelsContinuation = continuation
+        let (levelsStream, levelsCont) = AsyncStream<Float>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        self.levelsContinuation = levelsCont
+
+        // `.unbounded` on the samples stream: the consumer (LiveTranscriber) is
+        // off the audio thread, so yields buffer briefly. At ~341 samples / 7 ms
+        // tap interval × 600 s cap = ~85 K yields max if the consumer never reads —
+        // not a real-world concern but worth noting in case of a bug downstream.
+        let (samplesStream, samplesCont) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .unbounded)
+        self.samplesContinuation = samplesCont
 
         node.removeTap(onBus: 0)
         node.installTap(onBus: 0, bufferSize: 1024, format: inFmt) { [weak self] buffer, _ in
@@ -73,11 +100,13 @@ public final class AudioCapture: @unchecked Sendable {
             node.removeTap(onBus: 0)
             levelsContinuation?.finish()
             levelsContinuation = nil
+            samplesContinuation?.finish()
+            samplesContinuation = nil
             throw CaptureError.engineStart(error)
         }
 
         Log.audio.info("AudioCapture started: \(inFmt.description)")
-        return stream
+        return StartOutputs(levels: levelsStream, samples: samplesStream)
     }
 
     public func stop() -> AudioBuffer {
@@ -85,6 +114,8 @@ public final class AudioCapture: @unchecked Sendable {
         engine.stop()
         levelsContinuation?.finish()
         levelsContinuation = nil
+        samplesContinuation?.finish()
+        samplesContinuation = nil
 
         accumulatorLock.lock()
         let samples = accumulator
@@ -98,7 +129,8 @@ public final class AudioCapture: @unchecked Sendable {
     // MARK: - Tap handler
 
     private func handle(buffer: AVAudioPCMBuffer) {
-        // Safety cap: if we're past maxDuration, don't accumulate further but keep publishing levels at zero.
+        // Safety cap: if we're past maxDuration, stop accumulating + stop emitting
+        // samples but keep publishing levels (waveform stays alive visually).
         let elapsed = Date().timeIntervalSince(startedAt)
         let overLimit = elapsed > maxDuration
 
@@ -112,6 +144,9 @@ public final class AudioCapture: @unchecked Sendable {
             accumulatorLock.lock()
             accumulator.append(contentsOf: mono16k)
             accumulatorLock.unlock()
+            // Live mic feed — yield to LiveTranscriber if subscribed. Cheap no-op
+            // when no one's listening (continuation just buffers).
+            samplesContinuation?.yield(mono16k)
         }
     }
 

@@ -63,19 +63,32 @@ final class E2EVADTuningBenchmarkTests: XCTestCase {
             let label: String           // fixed width, for print alignment
             let tuning: QwenASRRecognizer.StreamingTuning
         }
-        // The full sweep history lives in docs/devlog/v0.4.5.md. After picking
-        // (0.3, 0.7) as the shipping config and adding HallucinationFilter, this
-        // benchmark is now a regression check: production must stay within a
-        // few % of baseline (preferably ABOVE — filter should reclaim the
-        // jfk / librispeech_1919 tail-fragment regressions seen pre-filter).
+        // The full sweep history lives in docs/devlog/v0.4.5.md and v0.5.0.md.
+        // After v0.4.5 picked (0.3, 0.7) + HallucinationFilter, v0.5.0 bumped the
+        // force-split threshold 10 → 25 s. This benchmark is now a regression
+        // check on three configs:
+        //   - baseline:       Silero defaults (no tuning, no filter)
+        //   - production10s:  v0.4.5 shipping config (force-split 10 s)
+        //   - production:     v0.5.0 shipping config (force-split 25 s)
+        // Expected: production ≥ production10s on similarity for fixtures with
+        // continuous 10-25 s speech spans, equal otherwise.
         let presets: [Preset] = [
             Preset(
                 label: "baseline   ",
                 tuning: .default  // Silero default: minSpeech 0.25, minSilence 0.10, no filter
             ),
             Preset(
+                label: "prod10s    ",
+                tuning: QwenASRRecognizer.StreamingTuning(  // v0.4.5 shipping config — kept for regression
+                    minSpeechDuration: 0.3,
+                    minSilenceDuration: 0.7,
+                    paddingSeconds: 0,
+                    maxSegmentDuration: 10.0
+                )
+            ),
+            Preset(
                 label: "production ",
-                tuning: .production  // shipping default — what AppDelegate uses
+                tuning: .production  // v0.5.0 shipping default (25 s force-split)
             ),
         ]
 
