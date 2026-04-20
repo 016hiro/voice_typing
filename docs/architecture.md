@@ -1,6 +1,6 @@
 # VoiceTyping 架构
 
-> 截至 v0.4.4。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)、v0.4.3 ASR 回归测试台、v0.4.4 Silero VAD bundle 预装 + refine 默认 Off + Developer logging。
+> 截至 v0.4.5。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)、v0.4.3 ASR 回归测试台、v0.4.4 Silero VAD bundle 预装 + refine 默认 Off + Developer logging、v0.4.5 VAD 调参 (minSpeech 0.3 / minSilence 0.7) + HallucinationFilter (训练尾巴 + prompt echo)。
 
 ## 1. 概览
 

@@ -15,7 +15,7 @@ SIGNING_IDENTITY ?= VoiceTyping Dev
 # the stable cdhash, not the trust chain.
 HAVE_SIGNING_IDENTITY := $(shell security find-identity -p codesigning 2>/dev/null | grep -q "\"$(SIGNING_IDENTITY)\"" && echo yes || echo no)
 
-.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e
+.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e benchmark-vad
 
 # Test bundle path produced by `swift build --build-tests`. E2E tests need
 # `mlx.metallib` copied next to this binary so `Bundle.main.executableURL`'s
@@ -147,3 +147,21 @@ test-e2e: metallib
 	VT_FIXTURE_ROOT=$(FIXTURE_ROOT) \
 	VT_MLX_TEST_READY=1 \
 	swift test --arch arm64
+
+# v0.4.5 prep: sweep candidate VAD tuning presets across every fixture and
+# print a side-by-side recap. Same staging as `test-e2e` but runs ONLY the
+# `E2EVADTuningBenchmark` suite with `VT_BENCHMARK=1` flipped on. Other E2E
+# tests are filtered out so the benchmark output isn't buried.
+benchmark-vad: metallib
+	swift build --build-tests --arch arm64
+	@if [ -f $(MLX_METALLIB) ]; then \
+	  cp $(MLX_METALLIB) $(TEST_BUNDLE_MACOS)/mlx.metallib; \
+	  echo "  staged mlx.metallib → $(TEST_BUNDLE_MACOS)/"; \
+	else \
+	  echo "  [warn] $(MLX_METALLIB) missing — run 'make setup-metal'"; \
+	  exit 1; \
+	fi
+	VT_FIXTURE_ROOT=$(FIXTURE_ROOT) \
+	VT_MLX_TEST_READY=1 \
+	VT_BENCHMARK=1 \
+	swift test --arch arm64 --filter E2EVADTuningBenchmark

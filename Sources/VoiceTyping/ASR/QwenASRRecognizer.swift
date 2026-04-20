@@ -185,6 +185,58 @@ private extension String {
 
 public extension QwenASRRecognizer {
 
+    /// Knobs that influence VAD-driven streaming. Default matches v0.4.2 behavior
+    /// so existing callers see no change. Used by the v0.4.5 benchmark + future
+    /// Phase 1 tuning work to compare segmentation strategies.
+    struct StreamingTuning: Sendable {
+        /// Override `VADConfig.minSpeechDuration`. `nil` = upstream Silero default (0.25s).
+        public let minSpeechDuration: Float?
+        /// Override `VADConfig.minSilenceDuration`. `nil` = upstream Silero default (0.10s).
+        public let minSilenceDuration: Float?
+        /// Pad each transcribed segment by this many seconds on both ends (clamped
+        /// to buffer bounds). 0 = no padding (v0.4.2 behavior). Padding is applied
+        /// to force-split and fallback paths too — minor overlap between adjacent
+        /// segments is harmless.
+        public let paddingSeconds: Float
+        /// Force-split threshold when a single speech span exceeds this duration.
+        public let maxSegmentDuration: Float
+
+        public init(
+            minSpeechDuration: Float? = nil,
+            minSilenceDuration: Float? = nil,
+            paddingSeconds: Float = 0,
+            maxSegmentDuration: Float = 10.0
+        ) {
+            self.minSpeechDuration = minSpeechDuration
+            self.minSilenceDuration = minSilenceDuration
+            self.paddingSeconds = paddingSeconds
+            self.maxSegmentDuration = maxSegmentDuration
+        }
+
+        /// Upstream Silero defaults — `(0.25s, 0.10s)`. Kept as the no-override
+        /// baseline so the benchmark and any opt-out caller can compare.
+        public static let `default` = StreamingTuning()
+
+        /// v0.4.5 shipping defaults: `minSpeech 0.3s, minSilence 0.7s, no padding`.
+        /// Validated by `make benchmark-vad` — same average similarity to batch
+        /// (~99 %), 17 % lower latency, segment count cut from 3.3 to 1.4 per
+        /// fixture, and recovers the leading word that `0.5s` was dropping.
+        /// Used by `AppDelegate.runASR`'s streaming path.
+        public static let production = StreamingTuning(
+            minSpeechDuration: 0.3,
+            minSilenceDuration: 0.7,
+            paddingSeconds: 0,
+            maxSegmentDuration: 10.0
+        )
+
+        fileprivate func buildVADConfig() -> VADConfig {
+            var cfg = VADConfig.sileroDefault
+            if let m = minSpeechDuration { cfg.minSpeechDuration = m }
+            if let m = minSilenceDuration { cfg.minSilenceDuration = m }
+            return cfg
+        }
+    }
+
     /// Emit transcript progressively as VAD-bounded segments finish ASR. Each yield
     /// carries the accumulated text so far; the final yield is the complete transcript.
     /// Designed for post-record streaming — caller passes the full buffer after Fn release.
@@ -196,7 +248,8 @@ public extension QwenASRRecognizer {
     func transcribeStreaming(
         _ buffer: AudioBuffer,
         language: Language,
-        context: String?
+        context: String?,
+        tuning: StreamingTuning = .default
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error> { continuation in
             let task = Task.detached(priority: .userInitiated) { [weak self] in
@@ -212,6 +265,7 @@ public extension QwenASRRecognizer {
                         buffer: buffer,
                         language: language,
                         context: context,
+                        tuning: tuning,
                         vadBox: box,
                         continuation: continuation
                     )
@@ -235,6 +289,7 @@ public extension QwenASRRecognizer {
         buffer: AudioBuffer,
         language: Language,
         context: String?,
+        tuning: StreamingTuning,
         vadBox: SharedVADBox,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) throws {
@@ -249,20 +304,27 @@ public extension QwenASRRecognizer {
             let ctx = context?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             let samples = buffer.samples
             let chunkSize = SileroVADModel.chunkSize
-            let maxSegmentDuration: Float = 10.0
+            let maxSegmentDuration = tuning.maxSegmentDuration
+            let padSamples = max(0, Int(tuning.paddingSeconds * 16000))
 
             // Silero VAD holds RNN hidden state between chunks; reset at both entry and
             // exit so a previous run can't bias the state machine on the next press.
             vad.resetState()
             defer { vad.resetState() }
 
-            let processor = StreamingVADProcessor(model: vad)
+            let processor = StreamingVADProcessor(model: vad, config: tuning.buildVADConfig())
             var speechStartSample: Int?
             var accumulated = ""
 
             func transcribeSegment(startSample: Int, endSample: Int) {
-                guard startSample < endSample else { return }
-                let segAudio = Array(samples[startSample..<endSample])
+                // Pad on both ends to give the ASR model extra acoustic context —
+                // VAD boundaries aren't exactly at word edges, and Qwen/Whisper
+                // hallucinate less when the segment has a small buffer of silence/
+                // speech around the detected span.
+                let paddedStart = max(0, startSample - padSamples)
+                let paddedEnd = min(endSample + padSamples, samples.count)
+                guard paddedStart < paddedEnd else { return }
+                let segAudio = Array(samples[paddedStart..<paddedEnd])
                 // Same minimum-FFT-window guard as the batch path: <400 samples
                 // crashes WhisperFeatureExtractor's reflect padding.
                 guard segAudio.count >= 400 else { return }
@@ -272,6 +334,15 @@ public extension QwenASRRecognizer {
                 )
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
+                // Drop training-data tails (`谢谢观看`, `Thank you.`) and
+                // segments that echo the bias `context` we just passed (the
+                // `热词：…` regurgitation observed on noisy short input).
+                // Without this filter, those segments leak straight into the
+                // injected text and the user has to delete them.
+                if HallucinationFilter.isLikelyHallucination(segment: trimmed, context: ctx) {
+                    Log.dev(Log.asr, "Hallucination filtered: \(trimmed)")
+                    return
+                }
                 if !accumulated.isEmpty { accumulated += " " }
                 accumulated += trimmed
                 continuation.yield(accumulated)

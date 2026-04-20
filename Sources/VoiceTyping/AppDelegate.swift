@@ -406,7 +406,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if useStreaming, let qwen = recognizer as? QwenASRRecognizer {
             var latest = ""
             for try await partial in qwen.transcribeStreaming(
-                buffer, language: language, context: context
+                buffer, language: language, context: context,
+                tuning: .production
             ) {
                 latest = partial
             }
