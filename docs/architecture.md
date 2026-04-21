@@ -1,6 +1,6 @@
 # VoiceTyping 架构
 
-> 截至 v0.5.0。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)、v0.4.3 ASR 回归测试台、v0.4.4 Silero VAD bundle 预装 + refine 默认 Off + Developer logging、v0.4.5 VAD 调参 (minSpeech 0.3 / minSilence 0.7) + HallucinationFilter (训练尾巴 + prompt echo)、v0.5.0 真 live-mic 流式 (LiveTranscriber + AudioCapture samples stream + VAD 预热) + force-split 阈值 10s → 25s。
+> 截至 v0.5.1。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)、v0.4.3 ASR 回归测试台、v0.4.4 Silero VAD bundle 预装 + refine 默认 Off + Developer logging、v0.4.5 VAD 调参 (minSpeech 0.3 / minSilence 0.7) + HallucinationFilter (训练尾巴 + prompt echo)、v0.5.0 真 live-mic 流式 (LiveTranscriber + AudioCapture samples stream + VAD 预热) + force-split 阈值 10s → 25s、v0.5.1 性能基线 instrument + dl_init 修 (cached prepare 5s → ~1s) + Debug Data Capture toggle + 首次启动检测不完整模型。
 
 ## 1. 概览
 

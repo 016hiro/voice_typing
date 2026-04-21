@@ -6,12 +6,12 @@
 
 ## 当前 ship
 
-**v0.5.0** — 真 live-mic 流式 + force-split 25s。详见 [`devlog/v0.5.0.md`](devlog/v0.5.0.md)。
+**v0.5.1** — 性能基线 instrument + dl_init 修 (cached prepare 5s → ~1s) + Debug capture toggle + UX 补丁。详见 [`devlog/v0.5.1.md`](devlog/v0.5.1.md)。
 
 最近三个里程碑（按时间倒序）：
+- **v0.5.1** — 性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示
 - **v0.5.0** — `LiveTranscriber` + 段级 incremental injection + force-split 10s → 25s
 - **v0.4.5** — VAD 调参 (0.3/0.7) + `HallucinationFilter`（训练尾巴 + prompt echo）
-- **v0.4.4** — Silero VAD 打 bundle + 胶囊去文本 + refine 默认 Off + Developer logging
 
 完整历史见 [`devlog/`](devlog/) 目录。
 
@@ -19,8 +19,8 @@
 
 主题：**live mode 落地 + 真实使用反馈驱动的 polish + 数据基础设施**
 
-- **v0.5.1** — 四条线并进：(1) UX 小补丁（首次启动检测、录音时长提示）(2) 性能基线（Qwen 加载量化 + 修上游 weights 双读 + 三 backend × 全 fixture 速度 benchmark）(3) Debug 数据捕获 toggle（用户开了之后录音/转写/注入全数据落盘，便于回溯分析；范围待讨论）(4) Live mode dogfood gate（不引入 live 新特性，攒真实数据给 v0.5.2 输入）。详见 [`todo/v0.5.1.md`](todo/v0.5.1.md)。
-- **v0.5.2** — VAD auto-stop + Live mode Settings UI 暴露（dogfood 验证后）。Live + refine 组合的设计落定。Debug capture 分析工具（CLI 子命令）。
+- **v0.5.1** ✅ — 性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示。7 项 Debug capture 决策全部锁定；B (修上游双读) 实测 <1% 占比，改为修 dl_init (HF HEAD 检查)。详见 [`devlog/v0.5.1.md`](devlog/v0.5.1.md) + [`todo/v0.5.1.md`](todo/v0.5.1.md)。
+- **v0.5.2** — live mode 公开（Settings UI）+ VAD auto-stop（UX 语义待拍）+ dogfood 驱动 polish。Debug capture CLI 工具看 dogfood 期间是否真有反复 jq 需求再决定。Live + refine 组合推到 v0.5.3 单独成版。
 
 ## 中期 (v0.6+)
 
