@@ -10,7 +10,7 @@ struct CapsuleView: View {
             MorseIndicator()
                 .frame(height: 12)
 
-            Text(state.statusTextForCapsule)
+            Text(state.capsuleOverlayText ?? state.statusTextForCapsule)
                 .font(.system(size: 16, weight: .medium, design: .monospaced))
                 .tracking(2)
                 .textCase(.uppercase)

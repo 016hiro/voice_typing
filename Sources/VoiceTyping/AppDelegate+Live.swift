@@ -47,12 +47,33 @@ extension AppDelegate {
             Log.app.info("Live: refine mode \(self.state.refineMode.rawValue, privacy: .public) skipped — live + refine not yet supported, see v0.5.0 devlog")
         }
 
+        // v0.5.1 Debug Capture: pipe both kept and HallucinationFilter-dropped
+        // segments into the writer so the offline analyses (#6 in
+        // todo/v0.5.1.md) have the filter ± data they need. Observer is
+        // captured weakly via the writer reference; nil writer (toggle off)
+        // means we don't pass an observer at all.
+        let captureWriter = self.currentDebugWriter
+        var segmentObserver: LiveTranscriber.SegmentObserver?
+        if let writer = captureWriter {
+            segmentObserver = { (event: LiveTranscriber.SegmentEvent) in
+                writer.appendSegment(DebugCaptureWriter.SegmentRecord(
+                    timestamp: Date(),
+                    startSec: event.startSec,
+                    endSec: event.endSec,
+                    rawText: event.rawText,
+                    filter: event.kept ? .kept : .hallucinationFiltered,
+                    transcribeMs: event.transcribeMs
+                ))
+            }
+        }
+
         let lt = LiveTranscriber(
             recognizer: qwen,
             vadBox: vadBox,
             tuning: .production,
             language: language,
-            context: asrContext
+            context: asrContext,
+            segmentObserver: segmentObserver
         )
         lt.start()
         activeLiveTranscriber = lt
@@ -73,6 +94,7 @@ extension AppDelegate {
         // and capsule cleanup.
         let injector = self.injector
         let appState = self.state
+        let injectWriter = captureWriter   // local capture so the closure is Sendable
         liveInjectTask = Task.detached {
             var accumulated = ""
             do {
@@ -89,11 +111,25 @@ extension AppDelegate {
                     let currentBundleID: String? = await MainActor.run {
                         NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                     }
+                    let injStart = Date()
+                    let status: DebugCaptureWriter.InjectStatus
                     if currentBundleID == frontmostBundleID {
                         await injector.inject(delta)
+                        status = .ok
                     } else {
                         Log.app.info("Live: focus moved (\(frontmostBundleID ?? "nil", privacy: .public) → \(currentBundleID ?? "nil", privacy: .public)) — segment dropped from inject (\(segment.count, privacy: .public) chars)")
+                        status = .focusChanged
                     }
+                    let injMs = Int(Date().timeIntervalSince(injStart) * 1000)
+                    injectWriter?.appendInjection(.init(
+                        timestamp: Date(),
+                        chars: delta.count,
+                        textPreview: String(delta.prefix(120)),
+                        targetBundleID: frontmostBundleID,
+                        actualBundleID: currentBundleID,
+                        status: status,
+                        elapsedMs: injMs
+                    ))
 
                     accumulated = accumulated.isEmpty ? segment : accumulated + " " + segment
 

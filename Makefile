@@ -15,7 +15,7 @@ SIGNING_IDENTITY ?= VoiceTyping Dev
 # the stable cdhash, not the trust chain.
 HAVE_SIGNING_IDENTITY := $(shell security find-identity -p codesigning 2>/dev/null | grep -q "\"$(SIGNING_IDENTITY)\"" && echo yes || echo no)
 
-.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e benchmark-vad
+.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e benchmark-vad benchmark-speed
 
 # Test bundle path produced by `swift build --build-tests`. E2E tests need
 # `mlx.metallib` copied next to this binary so `Bundle.main.executableURL`'s
@@ -165,3 +165,21 @@ benchmark-vad: metallib
 	VT_MLX_TEST_READY=1 \
 	VT_BENCHMARK=1 \
 	swift test --arch arm64 --filter E2EVADTuningBenchmark
+
+# v0.5.1 prep: per-backend × per-fixture batch transcription wall-clock + RTF.
+# Loads each backend in turn (Qwen 0.6B → 1.7B → Whisper, see test source for
+# why), discards the first fixture per backend as warmup, prints a recap table
+# with hardware footer. Skips backends whose models aren't downloaded.
+benchmark-speed: metallib
+	swift build --build-tests --arch arm64
+	@if [ -f $(MLX_METALLIB) ]; then \
+	  cp $(MLX_METALLIB) $(TEST_BUNDLE_MACOS)/mlx.metallib; \
+	  echo "  staged mlx.metallib → $(TEST_BUNDLE_MACOS)/"; \
+	else \
+	  echo "  [warn] $(MLX_METALLIB) missing — run 'make setup-metal'"; \
+	  exit 1; \
+	fi
+	VT_FIXTURE_ROOT=$(FIXTURE_ROOT) \
+	VT_MLX_TEST_READY=1 \
+	VT_BENCHMARK=1 \
+	swift test --arch arm64 --filter E2EBackendSpeedBenchmark

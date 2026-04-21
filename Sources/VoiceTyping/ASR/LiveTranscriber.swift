@@ -40,11 +40,25 @@ import SpeechVAD
 /// (VAD reports sample positions in absolute time); not worth the complexity.
 final class LiveTranscriber: @unchecked Sendable {
 
+    /// v0.5.1 Debug Capture hook. Fires once per segment regardless of
+    /// HallucinationFilter outcome — `kept` distinguishes which path the text
+    /// took. The writer uses this to capture the filter ± analysis (#6 in
+    /// `todo/v0.5.1.md`).
+    struct SegmentEvent: Sendable {
+        let rawText: String
+        let kept: Bool
+        let startSec: Double
+        let endSec: Double
+        let transcribeMs: Int
+    }
+    typealias SegmentObserver = @Sendable (SegmentEvent) -> Void
+
     private let recognizer: QwenASRRecognizer
     private let vadBox: SharedVADBox
     private let tuning: QwenASRRecognizer.StreamingTuning
     private let language: Language
     private let context: String?
+    private let segmentObserver: SegmentObserver?
 
     let output: AsyncThrowingStream<String, Error>
     private let outputContinuation: AsyncThrowingStream<String, Error>.Continuation
@@ -59,13 +73,15 @@ final class LiveTranscriber: @unchecked Sendable {
         vadBox: SharedVADBox,
         tuning: QwenASRRecognizer.StreamingTuning,
         language: Language,
-        context: String?
+        context: String?,
+        segmentObserver: SegmentObserver? = nil
     ) {
         self.recognizer = recognizer
         self.vadBox = vadBox
         self.tuning = tuning
         self.language = language
         self.context = context
+        self.segmentObserver = segmentObserver
 
         let (out, outCont) = AsyncThrowingStream<String, Error>.makeStream()
         self.output = out
@@ -135,21 +151,34 @@ final class LiveTranscriber: @unchecked Sendable {
         // Closure captures `liveBuffer` by reference via inout-style access
         // through the enclosing function scope — Swift handles this correctly
         // for value types in nested funcs.
+        let observer = segmentObserver
         func transcribeSegment(startSample: Int, endSample: Int) {
             let paddedStart = max(0, startSample - padSamples)
             let paddedEnd = min(endSample + padSamples, liveBuffer.count)
             guard paddedStart < paddedEnd else { return }
             let segAudio = Array(liveBuffer[paddedStart..<paddedEnd])
+            let segStart = Date()
             let text = recognizer.transcribeSegmentSync(
                 samples: segAudio, language: lang, context: ctx
             )
+            let transcribeMs = Int(Date().timeIntervalSince(segStart) * 1000)
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
+            let startSec = Double(paddedStart) / 16000
+            let endSec = Double(paddedEnd) / 16000
             // Same hallucination filter v0.4.5 added on the batch streaming path.
             // Drops training-data tails (`谢谢观看`, `Thank you.`) and segments
             // that echo the bias `context` we passed (the `热词：…` regurgitation
             // observed on noisy short input).
-            if HallucinationFilter.isLikelyHallucination(segment: trimmed, context: ctx) {
+            let kept = !HallucinationFilter.isLikelyHallucination(segment: trimmed, context: ctx)
+            observer?(SegmentEvent(
+                rawText: trimmed,
+                kept: kept,
+                startSec: startSec,
+                endSec: endSec,
+                transcribeMs: transcribeMs
+            ))
+            guard kept else {
                 Log.dev(Log.asr, "Live hallucination filtered: \(trimmed)")
                 return
             }

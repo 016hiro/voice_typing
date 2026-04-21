@@ -47,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var infoResetTask: Task<Void, Never>?
     private var backendSwapTask: Task<Void, Never>?
     private var appActivationObserver: NSObjectProtocol?
+    /// v0.5.1: drives the "Xs left" capsule overlay near the recording cap.
+    /// Started in `startRecording`, cancelled in `stopRecording` (and any
+    /// stopRecording early-return path so a stale countdown can't bleed into
+    /// the next session).
+    private var recordingDurationTask: Task<Void, Never>?
 
     // MARK: - Live transcriber state (v0.5.0)
     //
@@ -65,6 +70,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var liveSnapshot: LiveRunSnapshot?
     var cachedVADBox: SharedVADBox?
 
+    /// v0.5.1 Debug Capture session writer. Non-nil only while a recording
+    /// session is in flight AND `state.debugCaptureEnabled` is on. Set in
+    /// `startRecording`, ownership transferred to the pipelineTask in
+    /// `stopRecording` which finalizes (writes audio.wav + meta.json) after
+    /// transcribe + inject complete.
+    var currentDebugWriter: DebugCaptureWriter?
+
     /// ASR-side state captured at Fn↓ when live mode is on. Refine/inject
     /// snapshots still happen at Fn↑ (latest user choice). Held early so the
     /// live transcribe and the dictionary-hit detection use a consistent
@@ -80,6 +92,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         ModelStore.migrateV010WhisperLayoutIfNeeded()
+
+        // v0.5.1 Debug Capture maintenance: purge by age + size at launch.
+        // Cheap (file-system stats only) so doing it inline before the rest of
+        // app setup keeps the on-disk footprint bounded across runs even if
+        // the user opted into long retention then forgot to come back.
+        let purgedByAge = DebugCapture.purgeOlderThan(days: state.debugCaptureRetentionDays)
+        let purgedByCap = DebugCapture.purgeIfOverCap()
+        if purgedByAge + purgedByCap > 0 {
+            Log.app.info("DebugCapture launch purge: \(purgedByAge, privacy: .public) by-age, \(purgedByCap, privacy: .public) by-cap")
+        }
 
         _ = statusController
 
@@ -145,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recognizerStateTask?.cancel()
         pipelineTask?.cancel()
         backendSwapTask?.cancel()
+        recordingDurationTask?.cancel()
         permissionTimer?.invalidate()
         if let obs = appActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
@@ -201,6 +224,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Unload old Qwen to free weights (WhisperKit doesn't expose unload).
         if let old = recognizer as? QwenASRRecognizer {
             old.unload()
+        }
+
+        // v0.5.1 UX: detect partial / corrupt downloads from a killed previous
+        // session BEFORE prepare() so the next load runs against a clean
+        // working tree (or empty dir → upstream re-downloads). `repairIfIncomplete`
+        // is sync filesystem-stat work, fast enough to do inline; logs a
+        // user-visible line if anything was actually deleted.
+        if !ModelStore.isComplete(backend) {
+            let repaired = ModelStore.repairIfIncomplete(backend)
+            if repaired {
+                Log.app.info("Detected incomplete model for \(backend.rawValue, privacy: .public), cleaning and re-downloading")
+            }
         }
 
         let newRecognizer = RecognizerFactory.make(backend)
@@ -337,12 +372,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state.status = .recording
             infoResetTask?.cancel()
             capsuleWindow.show(levels: outputs.levels)
+
+            // v0.5.1 Debug Capture: open a session writer if the toggle is on.
+            // Created BEFORE `startLiveTranscriberIfEnabled` so the live path
+            // can pass an observer that funnels per-segment events into it.
+            // Snapshot is the Fn↓ state — survives later state edits.
+            let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            let asrCtx = GlossaryBuilder.buildForASR(activeBackend,
+                                                     entries: state.dictionary.entries,
+                                                     language: state.language)
+            let snippet = state.profiles.lookup(bundleID: bid)?.systemPromptSnippet
+            currentDebugWriter = DebugCaptureWriter.begin(
+                state: state,
+                backend: activeBackend,
+                language: state.language,
+                liveMode: useLive,
+                frontmostBundleID: bid,
+                profileSnippet: snippet,
+                asrContext: asrCtx
+            )
+
             // Live wiring (no-op when useLive is false — drains samples to /dev/null).
             startLiveTranscriberIfEnabled(samples: outputs.samples, useLive: useLive)
+            // v0.5.1: countdown overlay near the cap. Live mode (cap=600) gets
+            // a 60 s warning window; batch (cap=60) gets a 10 s window. Most
+            // sessions never trigger because users rarely hold Fn near the cap.
+            startRecordingDurationTimer(maxDuration: cap)
         } catch {
             Log.app.error("Audio start failed: \(error.localizedDescription, privacy: .public)")
             flashInfo(message(for: .micFailed), autoHide: true)
         }
+    }
+
+    /// Schedules a "Xs left" overlay starting `warningWindow` seconds before
+    /// the audio capture cap fires. Window scales with the cap — long live
+    /// sessions get a generous 60 s heads-up, short batch sessions get 10 s.
+    /// The overlay text bypasses `state.status` so the recording-state gate
+    /// in `stopRecording` keeps working; cleanup is the caller's
+    /// responsibility (see `clearRecordingDurationTimer`).
+    @MainActor
+    private func startRecordingDurationTimer(maxDuration: TimeInterval) {
+        recordingDurationTask?.cancel()
+        state.capsuleOverlayText = nil
+        let warningWindow: TimeInterval = maxDuration > 120 ? 60 : 10
+        let threshold = max(0, maxDuration - warningWindow)
+        let start = Date()
+        recordingDurationTask = Task { [weak self] in
+            // Sleep until the warning window opens. `Task.sleep` is
+            // cancellation-aware → Fn↑ tears this down promptly.
+            try? await Task.sleep(nanoseconds: UInt64(threshold * 1_000_000_000))
+            while !Task.isCancelled {
+                let remaining = maxDuration - Date().timeIntervalSince(start)
+                if remaining <= 0 { break }
+                let label = "\(Int(ceil(remaining)))s left"
+                await MainActor.run { [weak self] in
+                    self?.state.capsuleOverlayText = label
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    @MainActor
+    private func clearRecordingDurationTimer() {
+        recordingDurationTask?.cancel()
+        recordingDurationTask = nil
+        state.capsuleOverlayText = nil
     }
 
     private var isInfoState: Bool {
@@ -354,6 +449,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard state.status == .recording else { return }
         let buffer = audio.stop()
         state.status = .transcribing
+        clearRecordingDurationTimer()
+
+        // v0.5.1 Debug Capture: hand writer ownership off to the pipelineTask
+        // (or abort on early return). Clearing the field eagerly so a quick
+        // re-press of Fn starts a fresh session rather than appending into
+        // the in-flight one.
+        let captureWriter = currentDebugWriter
+        currentDebugWriter = nil
 
         // Guard against ultra-short taps (e.g. accidental Fn press). The Qwen
         // mel extractor and Whisper both assume at least one FFT window
@@ -361,6 +464,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if buffer.samples.count < 400 {
             Log.app.info("stopRecording: buffer too short (\(buffer.samples.count, privacy: .public) samples), skipping ASR")
             cleanUpLiveState()
+            captureWriter?.abort()
             flashInfo(message(for: .noSpeech), autoHide: true)
             return
         }
@@ -453,11 +557,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     dictEntries: dictEntries.count,
                     rawFirst: false
                 )
+                captureWriter?.finalize(audio: buffer)
                 return
             }
 
             // --- Batch / post-record streaming ---
             tracker.mark(.asrStart)
+            let asrStartedAt = Date()
             var transcript = ""
             do {
                 transcript = try await self.runASR(
@@ -470,14 +576,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.app.error("Transcribe failed: \(error.localizedDescription, privacy: .public)")
             }
             tracker.mark(.asrEnd)
+            let asrMs = Int(Date().timeIntervalSince(asrStartedAt) * 1000)
 
             let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
+                captureWriter?.abort()
                 await MainActor.run {
                     self.flashInfo(self.message(for: .noSpeech), autoHide: true)
                 }
                 return
             }
+
+            // v0.5.1 Debug Capture: batch records one segment for the whole
+            // transcript (per-yield capture would require threading the writer
+            // through `runASR` / `transcribeStreaming` and isn't worth the
+            // surface for the analyses that v0.5.1 ships).
+            captureWriter?.appendSegment(.init(
+                timestamp: Date(),
+                startSec: 0,
+                endSec: buffer.duration,
+                rawText: trimmed,
+                filter: .kept,
+                transcribeMs: asrMs
+            ))
 
             // Record ASR-side dictionary hits.
             let asrHits = GlossaryBuilder.matchedEntryIDs(in: trimmed, entries: dictEntries)
@@ -486,6 +607,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Decide whether refinement will run at all.
             let willRefine = (mode.systemPrompt != nil) && llmConfig.hasCredentials
 
+            let injStart = Date()
             if willRefine && rawFirst {
                 // Raw-first: inject raw immediately, refine in background, replace if safe.
                 await self.injectRawFirstThenRefine(
@@ -512,6 +634,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     tracker: tracker
                 )
             }
+            let injMs = Int(Date().timeIntervalSince(injStart) * 1000)
+            // Batch-mode injection record. Status is always `.ok` because the
+            // injectWaitingForRefine / injectRawFirstThenRefine paths don't
+            // surface a failure signal — if the inject failed, the user would
+            // see no text appear and the writer's audio.wav + segments.jsonl
+            // are still useful for diagnosis.
+            captureWriter?.appendInjection(.init(
+                timestamp: Date(),
+                chars: trimmed.count,
+                textPreview: String(trimmed.prefix(120)),
+                targetBundleID: frontmostBundleID,
+                actualBundleID: nil,
+                status: .ok,
+                elapsedMs: injMs
+            ))
+            captureWriter?.finalize(audio: buffer)
         }
     }
 

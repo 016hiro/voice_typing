@@ -16,6 +16,13 @@ final class AppState: ObservableObject {
     @Published var status: CapsuleStatus = .idle
     @Published var capsuleVisible: Bool = false
 
+    /// v0.5.1: optional text the capsule shows in place of the status-derived
+    /// label (`statusTextForCapsule`). Used by AppDelegate's recording-duration
+    /// timer to flash "Xs left" near the cap without changing `status` (which
+    /// would break the `status == .recording` gate that `stopRecording` checks).
+    /// Nil ⇒ capsule falls back to the status-derived label.
+    @Published var capsuleOverlayText: String?
+
     @Published var language: Language {
         didSet { UserDefaults.standard.set(language.rawValue, forKey: "language") }
     }
@@ -68,6 +75,22 @@ final class AppState: ObservableObject {
             UserDefaults.standard.set(developerMode, forKey: "developerMode")
             Log.devMode = developerMode
         }
+    }
+
+    /// v0.5.1 Debug Data Capture — when on, every recording session's audio +
+    /// per-segment text + inject result land under
+    /// `~/Library/Application Support/VoiceTyping/debug-captures/<session>/`.
+    /// Off by default. See `todo/v0.5.1.md` "Debug 数据捕获 toggle" for the
+    /// schema decisions and `DebugCapture` namespace for the file layout.
+    @Published var debugCaptureEnabled: Bool {
+        didSet { UserDefaults.standard.set(debugCaptureEnabled, forKey: "debugCaptureEnabled") }
+    }
+
+    /// v0.5.1: number of days to keep captured sessions before the launch-time
+    /// purge sweeps them. 0 means "never auto-purge" (user manages manually).
+    /// Allowed values are listed in `DebugCapture.retentionDayOptions`.
+    @Published var debugCaptureRetentionDays: Int {
+        didSet { UserDefaults.standard.set(debugCaptureRetentionDays, forKey: "debugCaptureRetentionDays") }
     }
 
     /// v0.3 custom vocabulary. Persisted via `CustomDictionary` to a JSON file.
@@ -127,6 +150,13 @@ final class AppState: ObservableObject {
         let dev = ud.bool(forKey: "developerMode")
         self.developerMode = dev
         Log.devMode = dev
+
+        self.debugCaptureEnabled = ud.bool(forKey: "debugCaptureEnabled")
+        // Default retention 7 days. `object(forKey:)` returns nil for never-set
+        // (treat as default), but 0 must round-trip as "never" — so check
+        // membership rather than truthiness.
+        let storedRetention = ud.object(forKey: "debugCaptureRetentionDays") as? Int
+        self.debugCaptureRetentionDays = storedRetention ?? 7
 
         let backendRaw = ud.string(forKey: "asrBackend")
         let persisted = backendRaw.flatMap { ASRBackend(rawValue: $0) } ?? .default

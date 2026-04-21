@@ -1588,12 +1588,85 @@ private struct ProfilesTab: View {
 private struct AdvancedTab: View {
     @ObservedObject var state: AppState
 
+    @State private var captureBytesOnDisk: Int64 = 0
+    @State private var clearedCount: Int = 0
+
     private let logCommand = #"""
 log stream --predicate 'subsystem == "com.voicetyping.app"' --style compact
 """#
 
     var body: some View {
         VStack(spacing: 14) {
+            SectionCard(title: "Debug Data Capture") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Toggle(isOn: $state.debugCaptureEnabled) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Record audio + transcripts for offline analysis")
+                                .font(.system(size: 13.5, weight: .semibold))
+                                .foregroundStyle(LG.text)
+                                .fx()
+                            Text("When on, every Fn dictation saves the raw audio, per-segment transcripts, and inject results to disk. Files stay on this Mac — never uploaded. Auto-purges per the schedule below. Use only when you want to investigate a specific issue; sessions accumulate quickly.")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(LG.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    HStack(spacing: 14) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Auto-purge after")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(LG.text)
+                                .fx()
+                            Picker("", selection: $state.debugCaptureRetentionDays) {
+                                ForEach(DebugCapture.retentionDayOptions, id: \.self) { days in
+                                    Text(DebugCapture.retentionLabel(days)).tag(days)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .disabled(!state.debugCaptureEnabled)
+                            .frame(width: 140)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text("On disk")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(LG.textFaint)
+                            Text(captureBytesLabel(captureBytesOnDisk))
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(LG.text)
+                                .fx()
+                        }
+                    }
+
+                    HStack(spacing: 10) {
+                        Button { openCapturesFolder() } label: {
+                            Label("Open captures folder", systemImage: "folder")
+                        }
+                        Button(role: .destructive) { clearAllCaptures() } label: {
+                            Label("Clear all captures", systemImage: "trash")
+                        }
+                        .disabled(captureBytesOnDisk == 0)
+                        Spacer()
+                        if clearedCount > 0 {
+                            Text("Cleared \(clearedCount) session\(clearedCount == 1 ? "" : "s")")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(LG.textFaint)
+                        }
+                    }
+                }
+            }
+            .onAppear { refreshCaptureSize() }
+            .onChange(of: state.debugCaptureEnabled) { _, _ in refreshCaptureSize() }
+            // Refresh while the tab is visible so a session ending mid-Settings
+            // updates the on-disk readout without forcing the user to bounce
+            // out and back. 2 s is fast enough to feel live, slow enough to
+            // not burn CPU on the file enumerator.
+            .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+                refreshCaptureSize()
+            }
+
             SectionCard(title: "Developer Logging") {
                 VStack(alignment: .leading, spacing: 14) {
                     Toggle(isOn: $state.developerMode) {
@@ -1658,5 +1731,36 @@ log stream --predicate 'subsystem == "com.voicetyping.app"' --style compact
     private func copyCommand() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(logCommand, forType: .string)
+    }
+
+    private func refreshCaptureSize() {
+        captureBytesOnDisk = DebugCapture.totalBytesOnDisk()
+    }
+
+    /// Formatter tuned for debug-capture sizes (KB-MB-GB range). Distinct
+    /// from `Int64.humanReadableBytes` which is MB-GB only — that one is
+    /// sized for ASR model weights and rounds anything < 1 MB down to
+    /// "Zero KB", which surfaces as the bug shown in v0.5.1 dogfood
+    /// (recordings ~50 KB each → display always reads zero).
+    private func captureBytesLabel(_ bytes: Int64) -> String {
+        let fmt = ByteCountFormatter()
+        fmt.countStyle = .file
+        fmt.allowedUnits = [.useKB, .useMB, .useGB]
+        return fmt.string(fromByteCount: bytes)
+    }
+
+    private func openCapturesFolder() {
+        NSWorkspace.shared.open(DebugCapture.folderURL)
+    }
+
+    private func clearAllCaptures() {
+        let n = DebugCapture.clearAll()
+        clearedCount = n
+        refreshCaptureSize()
+        // Reset the "Cleared N" hint after a few seconds so it doesn't linger.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            clearedCount = 0
+        }
     }
 }

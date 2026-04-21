@@ -75,11 +75,29 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
         // cached case at entry and pin progress to indeterminate "Loading…"
         // regardless of what the library reports.
         let alreadyDownloaded = ModelStore.isDownloaded(backend)
+        // v0.5.1 性能基线 follow-up: when our strict `isComplete` check passes,
+        // pass `offlineMode: true` to upstream so it skips the HuggingFace HEAD
+        // sweep (`HuggingFaceDownloader.downloadWeights` early-returns on
+        // `offlineMode && weightsExist`). Real measurement showed dl_init
+        // dominates cached prepare at 3-4 s while the actual mmap-based weight
+        // load is <20 ms. Falls back to network mode for first-time downloads
+        // or when `repairIfIncomplete` (in `activateBackend`) just cleared a
+        // partial state.
+        let canSkipHEAD = ModelStore.isComplete(backend)
         setState(.loading(progress: alreadyDownloaded ? -1 : 0))
+
+        // v0.5.1 性能基线 A: per-stage wall-clock from upstream progress
+        // callbacks. Buckets correspond to `Qwen3ASRModel.fromPretrained`
+        // status string transitions. NOTE: text-decoder weights and
+        // `MetalBudget.pinMemory` share the final bucket because upstream
+        // emits no callback between them — see todo/v0.5.1.md "性能基线 B".
+        let prepStart = Date()
+        let timing = LoadStageTimer(initialStage: "init")
 
         do {
             let handler: (Double, String) -> Void = { [weak self] fraction, status in
                 guard let self else { return }
+                timing.mark(stage: status)
                 if alreadyDownloaded {
                     self.setState(.loading(progress: -1))
                 } else {
@@ -92,10 +110,30 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
             let loaded = try await Qwen3ASRModel.fromPretrained(
                 modelId: modelId,
                 cacheDir: cacheDir,
-                offlineMode: false,
+                offlineMode: canSkipHEAD,
                 progressHandler: handler
             )
             self.model = loaded
+            timing.mark(stage: "loaded")
+            let loadMs = Int(Date().timeIntervalSince(prepStart) * 1000)
+
+            // First-inference warmup. Metal kernels JIT on first dispatch, so
+            // the first user-visible transcribe used to be 5-10× slower than
+            // steady state. Burning 1 s of silence here moves that cost into
+            // prepare. Result is discarded; `transcribeSegmentSync` doesn't
+            // apply HallucinationFilter, so any training-tail output is
+            // silently dropped without polluting logs.
+            let warmupMs: Int = await Task.detached(priority: .userInitiated) { [weak self] in
+                guard let self else { return 0 }
+                let start = Date()
+                let silence = [Float](repeating: 0, count: 16000)
+                _ = self.transcribeSegmentSync(samples: silence, language: "en", context: nil)
+                return Int(Date().timeIntervalSince(start) * 1000)
+            }.value
+
+            let totalMs = Int(Date().timeIntervalSince(prepStart) * 1000)
+            Log.app.info("Qwen prepare timing: backend=\(self.backend.rawValue, privacy: .public) cached=\(alreadyDownloaded ? "yes" : "no", privacy: .public) offline=\(canSkipHEAD ? "yes" : "no", privacy: .public) total=\(totalMs, privacy: .public)ms load=\(loadMs, privacy: .public)ms warmup=\(warmupMs, privacy: .public)ms stages=[\(timing.summary, privacy: .public)]")
+
             setState(.ready)
             Log.dev(Log.asr, "Qwen3-ASR loaded: \(self.modelId)")
         } catch {
@@ -199,6 +237,65 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// v0.5.1 性能基线 A: tracks elapsed wall-clock per upstream-emitted load
+/// stage. The handler called by `Qwen3ASRModel.fromPretrained` may fire
+/// many times per stage (download progress fractions); we only record a
+/// new bucket when the status string actually changes, so each entry is
+/// "time spent in stage X before transitioning to stage Y".
+///
+/// Class (not struct) so the closure passed to `fromPretrained` can mutate
+/// shared state without `inout` ceremony. `@unchecked Sendable` because
+/// `NSLock` guards all mutation; the handler is called sequentially by
+/// upstream, but better safe than sorry.
+private final class LoadStageTimer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastTime: Date
+    private var lastStage: String
+    private var stages: [(String, Int)] = []
+
+    init(initialStage: String) {
+        self.lastTime = Date()
+        self.lastStage = initialStage
+    }
+
+    func mark(stage newStage: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard newStage != lastStage else { return }
+        let now = Date()
+        let ms = Int(now.timeIntervalSince(lastTime) * 1000)
+        stages.append((shortKey(lastStage), ms))
+        lastTime = now
+        lastStage = newStage
+    }
+
+    var summary: String {
+        lock.lock(); defer { lock.unlock() }
+        return stages.map { "\($0.0)=\($0.1)ms" }.joined(separator: " ")
+    }
+
+    /// Compact key for log readability. Upstream status strings are verbose
+    /// ("Loading audio encoder weights...") — shorten to one token each.
+    /// Unknown strings fall through with whitespace stripped so future
+    /// upstream additions still appear (just less pretty).
+    private func shortKey(_ status: String) -> String {
+        switch status {
+        case "init":                              return "init"
+        case "Downloading model...":              return "dl_init"
+        case "Downloading weights...":            return "download"
+        case "Loading tokenizer...":              return "tokenizer"
+        case "Loading audio encoder weights...": return "audio_w"
+        case "Loading text decoder weights...": return "text_w_pin"
+        case "Ready":                             return "ready"
+        case "loaded":                            return "loaded"
+        default:
+            return status
+                .replacingOccurrences(of: " ", with: "_")
+                .replacingOccurrences(of: ".", with: "")
+                .lowercased()
+        }
+    }
 }
 
 // MARK: - Streaming transcription (v0.4.2)
