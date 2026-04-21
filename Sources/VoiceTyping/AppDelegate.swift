@@ -57,6 +57,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     var activeLiveTranscriber: LiveTranscriber?
     var liveIngestTask: Task<Void, Never>?
+    /// Consumes per-segment yields from `LiveTranscriber.output` and injects
+    /// each segment into the focused app the moment it arrives. Returns the
+    /// full accumulated transcript when the stream finishes — `stopRecording`
+    /// awaits this for latency logging.
+    var liveInjectTask: Task<String, Never>?
     var liveSnapshot: LiveRunSnapshot?
     var cachedVADBox: SharedVADBox?
 
@@ -365,9 +370,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // reentrant startRecording can't see stale state.
         let liveTranscriber = activeLiveTranscriber
         let liveIngest = liveIngestTask
+        let liveInject = liveInjectTask
         let liveSnap = liveSnapshot
         activeLiveTranscriber = nil
         liveIngestTask = nil
+        liveInjectTask = nil
         liveSnapshot = nil
 
         // ASR-side state: live mode uses the early snapshot (captured at Fn↓);
@@ -417,28 +424,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pipelineTask = Task { [weak self] in
             guard let self else { return }
 
-            // --- ASR ---
+            // --- Live mode ---
+            // Segments were transcribed AND injected as they arrived (see
+            // `AppDelegate+Live.swift`'s inject task). Here we just await the
+            // drain to know we have the final transcript, then close out the
+            // capsule UI. Refine is intentionally skipped — see devlog v0.5.0
+            // "明确不做" for why.
+            if let lt = liveTranscriber {
+                tracker.mark(.asrStart)
+                await liveIngest?.value     // upstream samples drained
+                lt.finish()                  // signal flush of any tail segment
+                let transcript = (await liveInject?.value) ?? ""
+                tracker.mark(.asrEnd)
+                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                Log.dev(Log.asr, "Live drain final: \(trimmed.count) chars")
+
+                await MainActor.run {
+                    if trimmed.isEmpty {
+                        self.flashInfo(self.message(for: .noSpeech), autoHide: true)
+                    } else {
+                        self.capsuleWindow.hide()
+                        self.state.status = .idle
+                    }
+                }
+                tracker.log(
+                    backend: backend.rawValue,
+                    mode: "live",  // refine is skipped in live mode
+                    dictEntries: dictEntries.count,
+                    rawFirst: false
+                )
+                return
+            }
+
+            // --- Batch / post-record streaming ---
             tracker.mark(.asrStart)
             var transcript = ""
             do {
-                if let lt = liveTranscriber {
-                    // Live: wait for samples drain (audio.stop() finished the
-                    // upstream stream), tell LiveTranscriber to flush + drain
-                    // its own ASR queue, then read the final accumulated text.
-                    await liveIngest?.value
-                    lt.finish()
-                    for try await text in lt.output {
-                        transcript = text
-                    }
-                    Log.dev(Log.asr, "Live drain returned \(transcript.count) chars")
-                } else {
-                    transcript = try await self.runASR(
-                        buffer: buffer,
-                        language: language,
-                        context: asrContext,
-                        useStreaming: useStreaming
-                    )
-                }
+                transcript = try await self.runASR(
+                    buffer: buffer,
+                    language: language,
+                    context: asrContext,
+                    useStreaming: useStreaming
+                )
             } catch {
                 Log.app.error("Transcribe failed: \(error.localizedDescription, privacy: .public)")
             }

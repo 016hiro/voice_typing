@@ -19,6 +19,14 @@ import SpeechVAD
 /// `finish()` closes the sample stream; the pump runs `processor.flush()` to
 /// emit any tail segment, transcribes it, then completes the `output` stream.
 ///
+/// Output semantics
+/// ----------------
+/// `output` yields **per-segment text** as each segment finishes — NOT
+/// cumulative. Consumer is responsible for accumulating if it wants the full
+/// transcript. This deliberate choice lets AppDelegate inject each segment
+/// into the focused app the moment it arrives (the live UX), rather than
+/// holding back until Fn↑.
+///
 /// Why not hold a single async-loop lock over the whole pump (like
 /// `runStreaming` does for the batch path)? Because the live pump does
 /// `for await chunk in sampleStream` — Swift's unfair lock can't be held
@@ -84,8 +92,8 @@ final class LiveTranscriber: @unchecked Sendable {
     }
 
     /// Signal end-of-input. The pump runs VAD flush + tail transcription, then
-    /// `output` finishes. Caller should `for try await text in output {…}` and
-    /// take the last yield as the final transcript.
+    /// `output` finishes. Caller should `for try await segment in output {…}`
+    /// to receive each segment's text as it arrives.
     func finish() {
         sampleContinuation.finish()
     }
@@ -122,8 +130,7 @@ final class LiveTranscriber: @unchecked Sendable {
         var liveBuffer: [Float] = []
         liveBuffer.reserveCapacity(16_000 * 30)  // typical recording length
         var speechStartSample: Int?
-        var accumulated = ""
-        var segmentCount = 0
+        var emittedSegmentCount = 0
 
         // Closure captures `liveBuffer` by reference via inout-style access
         // through the enclosing function scope — Swift handles this correctly
@@ -146,10 +153,9 @@ final class LiveTranscriber: @unchecked Sendable {
                 Log.dev(Log.asr, "Live hallucination filtered: \(trimmed)")
                 return
             }
-            if !accumulated.isEmpty { accumulated += " " }
-            accumulated += trimmed
-            segmentCount += 1
-            outputContinuation.yield(accumulated)
+            emittedSegmentCount += 1
+            // Per-segment yield (NOT cumulative). Consumer assembles deltas.
+            outputContinuation.yield(trimmed)
         }
 
         for await chunk in sampleStream {
@@ -202,10 +208,10 @@ final class LiveTranscriber: @unchecked Sendable {
 
         // Edge case: VAD never confirmed any speech (very short / soft / noisy).
         // Mirror the batch path's fallback so the user still gets some output.
-        if accumulated.isEmpty && liveBuffer.count >= 400 {
+        if emittedSegmentCount == 0 && liveBuffer.count >= 400 {
             transcribeSegment(startSample: 0, endSample: liveBuffer.count)
         }
 
-        Log.asr.info("LiveTranscriber finished: \(liveBuffer.count) samples / \(segmentCount) segments / \(accumulated.count) chars")
+        Log.asr.info("LiveTranscriber finished: \(liveBuffer.count) samples / \(emittedSegmentCount) segments emitted")
     }
 }

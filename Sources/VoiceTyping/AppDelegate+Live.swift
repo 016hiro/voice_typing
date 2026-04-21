@@ -39,6 +39,14 @@ extension AppDelegate {
             profileSnippet: profileSnippet
         )
 
+        // Warn-only: live mode + refine combination is intentionally unsupported
+        // for v0.5.0 (Cmd+Z chain across N segment pastes is fragile, see devlog).
+        // The pipelineTask's live branch will skip refine; flag it here so
+        // someone debugging "why isn't my refine running" finds the answer in logs.
+        if state.refineMode.systemPrompt != nil && state.llmConfig.hasCredentials {
+            Log.app.info("Live: refine mode \(self.state.refineMode.rawValue, privacy: .public) skipped — live + refine not yet supported, see v0.5.0 devlog")
+        }
+
         let lt = LiveTranscriber(
             recognizer: qwen,
             vadBox: vadBox,
@@ -57,6 +65,52 @@ extension AppDelegate {
             }
         }
 
+        // Detached inject task: each segment yielded by LiveTranscriber.output
+        // gets injected into the focused app immediately. This is the live UX
+        // win — text appears as the user is still talking (after each VAD
+        // segment or 25 s force-split). Returns the accumulated transcript
+        // when the stream finishes; `stopRecording` awaits this for logging
+        // and capsule cleanup.
+        let injector = self.injector
+        let appState = self.state
+        liveInjectTask = Task.detached {
+            var accumulated = ""
+            do {
+                for try await segment in lt.output {
+                    // Compute the delta to inject. First segment goes in
+                    // as-is; subsequent segments get a leading space so
+                    // English reads naturally. (Chinese gets an extra space
+                    // between segments, matching v0.4.5 batch streaming.)
+                    let delta = accumulated.isEmpty ? segment : " " + segment
+
+                    // Focus check: if the user switched apps mid-recording,
+                    // skip injection but still accumulate so the final
+                    // transcript log is complete.
+                    let currentBundleID: String? = await MainActor.run {
+                        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    }
+                    if currentBundleID == frontmostBundleID {
+                        await injector.inject(delta)
+                    } else {
+                        Log.app.info("Live: focus moved (\(frontmostBundleID ?? "nil", privacy: .public) → \(currentBundleID ?? "nil", privacy: .public)) — segment dropped from inject (\(segment.count, privacy: .public) chars)")
+                    }
+
+                    accumulated = accumulated.isEmpty ? segment : accumulated + " " + segment
+
+                    // Per-segment dictionary hits — attribute incrementally
+                    // so the LRU updates as the user is dictating, not in a
+                    // single burst at end.
+                    let hits = GlossaryBuilder.matchedEntryIDs(in: segment, entries: dictEntries)
+                    if !hits.isEmpty {
+                        await MainActor.run { appState.noteDictionaryMatches(hits) }
+                    }
+                }
+            } catch {
+                Log.app.error("Live inject task error: \(error.localizedDescription, privacy: .public)")
+            }
+            return accumulated
+        }
+
         if let ctx = asrContext {
             Log.dev(Log.app, "Live: started with bias context (\(ctx.count) chars)")
         } else {
@@ -72,6 +126,8 @@ extension AppDelegate {
         activeLiveTranscriber = nil
         liveIngestTask?.cancel()
         liveIngestTask = nil
+        liveInjectTask?.cancel()
+        liveInjectTask = nil
         liveSnapshot = nil
     }
 }

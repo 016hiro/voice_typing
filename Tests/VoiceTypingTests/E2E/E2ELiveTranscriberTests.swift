@@ -123,11 +123,17 @@ final class E2ELiveTranscriberTests: XCTestCase {
             }
             lt.finish()
 
-            // Drain output — last yield is the final accumulated text.
+            // Drain output — each yield is one segment's text. Accumulate to
+            // the same shape AppDelegate's live inject task uses (first segment
+            // verbatim, subsequent joined with " "). v0.5.0 changed `.output`
+            // from cumulative to per-segment so AppDelegate can inject deltas
+            // into the focused app live, mid-recording.
             var liveText = ""
+            var segmentTexts: [String] = []
             do {
-                for try await text in lt.output {
-                    liveText = text
+                for try await segment in lt.output {
+                    segmentTexts.append(segment)
+                    liveText = liveText.isEmpty ? segment : liveText + " " + segment
                 }
             } catch {
                 XCTFail("[\(name)] live drain threw: \(error)")
@@ -147,7 +153,7 @@ final class E2ELiveTranscriberTests: XCTestCase {
 
             print("\n── \(name) (\(String(format: "%.1f", fixture.audio.duration))s · \(fixture.expected.language)) ─────────────")
             print("  batch (\(batchText.count) chars) │ \(batchText)")
-            print("  live  (\(liveText.count) chars, \(chunks) chunks fed) │ \(liveText)")
+            print("  live  (\(liveText.count) chars, \(chunks) chunks fed, \(segmentTexts.count) segments) │ \(liveText)")
             print("  similarity: \(Int((sim * 100).rounded()))%")
         }
 
