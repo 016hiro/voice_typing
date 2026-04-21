@@ -29,13 +29,16 @@
 - [ ] ~~**中英自动语种检测**~~：Qwen3-ASR 原生就支持中英混合输入（2026-04-18 实测 zh-CN hint 下混读英文仍转写正确）。保留 Whisper backend 的场景：它 code-switch 弱，仍需要语言选择 UI。v0.4.0 不再拿它做主线。
 - [x] ~~**流式转录 (post-record)**~~：v0.4.2 落地 opt-in experimental，VAD 分段 + 段级 Qwen 转写 + progressive 胶囊显示。详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。真 live-mic 留到下一项。
 - [x] ~~**真 live-mic 流式**~~：v0.5.0 落地 `LiveTranscriber` + `AudioCapture.samples` 流 + VAD 预热 + per-segment lock；force-split 同时升 10 → 25s。隐藏 toggle (`liveStreamingEnabled` UserDefaults)，dogfood 一周后加 UI。详见 [../devlog/v0.5.0.md](../devlog/v0.5.0.md)。
-- [ ] **VAD 自动停止**（live-mic 副产品，留 v0.5.2）：除 Fn 松开外，检测到长时间静默自动结束录音。v0.5.0 live mic 稳定后评估。v0.5.1 继续延后，UX 语义需要 dogfood 数据支撑（"hold Fn" 模型下 silence-stop 可能反直觉）。
-- [ ] **更多 ASR 后端**：
+- [ ] **VAD 自动停止 / Hands-free 模式**（留 v0.5.3）：tap Fn → 录音 → 检测到长时间静默自动结束；hold Fn 行为不变。v0.5.2 决定单独成版本——需要专门的 UX 设计（tap-vs-hold 检测、模式状态指示、abort 手势），混在 Live UI 公开里会拖时间并模糊版本主题。
+- [ ] **更多 ASR 后端 + streaming 抽象**（v0.6.0 候选主题）：
+  - `LiveTranscriber` 从硬类型 `QwenASRRecognizer` 抽象到 `SpeechRecognizer` 协议（前置）
+  - `SpeechRecognizer` 协议补 `transcribeSegment` 同步入口（Qwen 已有 `transcribeSegmentSync`，Whisper 需要包一层）
+  - WhisperKit streaming（post-record 先做，立即能 ship；live 依赖上面抽象完成）
   - whisper.cpp 实现（Intel Mac 支持 + 量化模型选项）
   - Apple SFSpeechRecognizer 实现（无依赖、零下载、低延迟，但中英混杂效果差）
   - OpenAI Whisper API 实现（云端、最高准确度、需 key）
-- [ ] **多 LLM 支持**：Claude / Gemini / 本地 Ollama 等。`LLMRefiner` 抽象成协议，多实现。
-- [ ] **本地 MLX refiner**：v0.5.0 候选，摆脱 API key 依赖。
+- [ ] **多 LLM 支持 + Refine 专版**：`LLMRefiner` 抽象成协议，Claude / Gemini / 本地 Ollama 多实现。同版处理 Live + refine 组合设计（Cmd+Z chain 跨段问题）+ refine I/O capture（v0.5.1 punted）。
+- [ ] **本地 MLX refiner**：v0.5.0 候选，摆脱 API key 依赖。挂在 Refine 专版一起做或独立主题。
 
 ## 长期 / 想法池
 

@@ -20,15 +20,16 @@
 主题：**live mode 落地 + 真实使用反馈驱动的 polish + 数据基础设施**
 
 - **v0.5.1** ✅ — 性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示。7 项 Debug capture 决策全部锁定；B (修上游双读) 实测 <1% 占比，改为修 dl_init (HF HEAD 检查)。详见 [`devlog/v0.5.1.md`](devlog/v0.5.1.md) + [`todo/v0.5.1.md`](todo/v0.5.1.md)。
-- **v0.5.2** — live mode 公开（Settings UI）+ VAD auto-stop（UX 语义待拍）+ dogfood 驱动 polish。Debug capture CLI 工具看 dogfood 期间是否真有反复 jq 需求再决定。Live + refine 组合推到 v0.5.3 单独成版。
+- **v0.5.2** — Live mode Settings UI 公开（把 `liveStreamingEnabled` 从 UserDefaults-hidden 抬到 Settings → Models，同时把 "Streaming" 改名 "Post-record streaming" 避免与 Live 撞概念）+ `Scripts/analysis/` 4 个 Python stdlib 分析脚本前置 + dogfood 驱动 polish（TBD by data）。详见 [`todo/v0.5.2.md`](todo/v0.5.2.md)。
+- **v0.5.3** — VAD auto-stop / Hands-free 模式（tap Fn → 录音 → 检测长静默自停）。单独成版本因为需要 tap-vs-hold 检测 + 模式状态 UI + abort 手势等专门的 UX 设计，不适合混在 Live UI 公开里。
 
 ## 中期 (v0.6+)
 
 主题候选（具体顺序看 v0.5.x 数据再定）：
 
-- **多 LLM 后端**：`LLMRefiner` 抽象成协议；Claude / Gemini / 本地 Ollama 实现。
-- **本地 MLX refiner**：v0.5.0 里曾被点名为候选，但优先级让位给了 live mic。摆脱 API key 依赖，零网络可用。
-- **更多 ASR 后端**：whisper.cpp（Intel Mac 支持 + 量化）、Apple SFSpeechRecognizer（无依赖、低延迟，中英混读弱）、OpenAI Whisper API（云端最准、需 key）。
+- **v0.6.0 候选：多 backend streaming 抽象 + 更多 ASR backend**：`LiveTranscriber` 从硬类型 `QwenASRRecognizer` 抽象到 `SpeechRecognizer` 协议，协议补 `transcribeSegment` 同步入口。落地后打开的 backend：WhisperKit streaming（原生 Apple 栈，补 streaming hook 即可）、whisper.cpp（Intel Mac + 量化）、Apple SFSpeechRecognizer（零依赖、极低延迟、中英混读弱）、OpenAI Whisper API（云端、需 key）。连贯主题："backend 多样化 + streaming 一致化"。
+- **Refine 专版**（暂记 v0.5.4 或 v0.6.x）：Live + refine 组合设计落定（Cmd+Z chain 跨 N 段的替代方案）+ refine I/O capture 补齐 + 多 LLM backend（Claude / Gemini / 本地 Ollama）。目前 v0.5.0+ 是 live mode 跳过 refine。
+- **本地 MLX refiner**：v0.5.0 曾被点名为候选，优先级让位给 live mic。摆脱 API key 依赖，零网络可用。挂在 Refine 专版一起做或独立主题。
 - **快捷键可配置 + 历史转录**：纯 UX，用户多了之后会需要。
 
 ## 长期 / 想法池
