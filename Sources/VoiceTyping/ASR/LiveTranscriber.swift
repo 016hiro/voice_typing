@@ -53,12 +53,23 @@ final class LiveTranscriber: @unchecked Sendable {
     }
     typealias SegmentObserver = @Sendable (SegmentEvent) -> Void
 
+    /// v0.5.3 hands-free hook. Fires the moment VAD reports a speech-state
+    /// transition — *before* the transcribe call. Lets the hands-free state
+    /// machine arm/cancel its silence timer without waiting on ASR latency.
+    /// Fires on the pump task thread; observer must bounce to its own actor.
+    enum VADEvent: Sendable {
+        case speechStarted
+        case speechEnded
+    }
+    typealias VADObserver = @Sendable (VADEvent) -> Void
+
     private let recognizer: QwenASRRecognizer
     private let vadBox: SharedVADBox
     private let tuning: QwenASRRecognizer.StreamingTuning
     private let language: Language
     private let context: String?
     private let segmentObserver: SegmentObserver?
+    private let vadObserver: VADObserver?
 
     let output: AsyncThrowingStream<String, Error>
     private let outputContinuation: AsyncThrowingStream<String, Error>.Continuation
@@ -74,7 +85,8 @@ final class LiveTranscriber: @unchecked Sendable {
         tuning: QwenASRRecognizer.StreamingTuning,
         language: Language,
         context: String?,
-        segmentObserver: SegmentObserver? = nil
+        segmentObserver: SegmentObserver? = nil,
+        vadObserver: VADObserver? = nil
     ) {
         self.recognizer = recognizer
         self.vadBox = vadBox
@@ -82,6 +94,7 @@ final class LiveTranscriber: @unchecked Sendable {
         self.language = language
         self.context = context
         self.segmentObserver = segmentObserver
+        self.vadObserver = vadObserver
 
         let (out, outCont) = AsyncThrowingStream<String, Error>.makeStream()
         self.output = out
@@ -199,8 +212,10 @@ final class LiveTranscriber: @unchecked Sendable {
             for event in events {
                 switch event {
                 case .speechStarted(let t):
+                    vadObserver?(.speechStarted)
                     speechStartSample = Int(t * 16000)
                 case .speechEnded(let seg):
+                    vadObserver?(.speechEnded)
                     if let start = speechStartSample {
                         let endSample = min(Int(seg.endTime * 16000), liveBuffer.count)
                         transcribeSegment(startSample: start, endSample: endSample)
@@ -229,6 +244,7 @@ final class LiveTranscriber: @unchecked Sendable {
         let flushEvents = processor.flush()
         for event in flushEvents {
             if case .speechEnded(let seg) = event, let start = speechStartSample {
+                vadObserver?(.speechEnded)
                 let endSample = min(Int(seg.endTime * 16000), liveBuffer.count)
                 transcribeSegment(startSample: start, endSample: endSample)
                 speechStartSample = nil

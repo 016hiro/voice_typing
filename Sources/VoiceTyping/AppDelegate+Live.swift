@@ -6,17 +6,29 @@ extension AppDelegate {
 
     /// Wires `outputs.samples` to a `LiveTranscriber` if live mode is on AND
     /// the VAD has been pre-warmed (see `activateBackend`). Otherwise drains
-    /// the samples stream so AudioCapture's continuation doesn't backlog.
+    /// the samples stream so AudioCapture's continuation doesn't backlog —
+    /// unless `drainIfNotLive` is false, in which case the caller is
+    /// responsible for consuming `samples` (used by the v0.5.3 hands-free
+    /// watchdog path so two consumers don't race for the same stream).
     ///
     /// `useLive` is computed in `startRecording` so the maxDuration cap on
     /// `audio.start` matches the path we'll take here. Re-checks invariants
     /// defensively in case state changed between the two call sites (rare —
     /// they execute back-to-back on the main actor).
-    func startLiveTranscriberIfEnabled(samples: AsyncStream<[Float]>, useLive: Bool) {
+    ///
+    /// `vadObserver` (v0.5.3) is plumbed into the LiveTranscriber so the
+    /// hands-free state machine can react to silence events the moment VAD
+    /// fires them.
+    func startLiveTranscriberIfEnabled(samples: AsyncStream<[Float]>,
+                                        useLive: Bool,
+                                        vadObserver: LiveTranscriber.VADObserver? = nil,
+                                        drainIfNotLive: Bool = true) {
         guard useLive,
               let qwen = recognizer as? QwenASRRecognizer,
               let vadBox = cachedVADBox else {
-            Task.detached { for await _ in samples {} }
+            if drainIfNotLive {
+                Task.detached { for await _ in samples {} }
+            }
             return
         }
 
@@ -73,7 +85,8 @@ extension AppDelegate {
             tuning: .production,
             language: language,
             context: asrContext,
-            segmentObserver: segmentObserver
+            segmentObserver: segmentObserver,
+            vadObserver: vadObserver
         )
         lt.start()
         activeLiveTranscriber = lt

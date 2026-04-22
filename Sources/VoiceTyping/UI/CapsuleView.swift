@@ -7,8 +7,18 @@ struct CapsuleView: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            MorseIndicator()
+            // v0.5.3: morse tint shifts to warm-orange in hands-free so the
+            // user can tell at a glance which mode they're in (no Fn pressed
+            // = could be confusing without a visual cue).
+            MorseIndicator(tint: state.handsFreeActive ? .orange : .primary)
                 .frame(height: 12)
+
+            // v0.5.3 HF badge — small pill rendered only during hands-free.
+            // Lives between the morse and the status text so the layout
+            // shifts predictably (status text just slides right).
+            if state.handsFreeActive {
+                HandsFreeBadge()
+            }
 
             Text(state.capsuleOverlayText ?? state.statusTextForCapsule)
                 .font(.system(size: 16, weight: .medium, design: .monospaced))
@@ -52,13 +62,15 @@ private struct MorseIndicator: View {
     private static let stagger: Double = 0.14
     private static let minOpacity: Double = 0.18
 
+    var tint: Color = .primary
+
     var body: some View {
         TimelineView(.animation) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: 4) {
                 ForEach(Array(Self.segments.enumerated()), id: \.offset) { idx, width in
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.primary)
+                        .fill(tint)
                         .frame(width: width, height: 3)
                         .opacity(opacity(at: t, index: idx))
                 }
@@ -73,5 +85,23 @@ private struct MorseIndicator: View {
         // Matches CSS ease-in-out keyframes (0%,100% → min, 50% → 1.0)
         let wave = (1 - cos(phase * 2 * .pi)) / 2
         return Self.minOpacity + wave * (1 - Self.minOpacity)
+    }
+}
+
+/// v0.5.3 hands-free state pill. Small, low-chrome — the morse tint shift
+/// already screams "different mode"; this just labels it. Orange to match
+/// the morse tint and reinforce the visual signal.
+private struct HandsFreeBadge: View {
+    var body: some View {
+        Text("HF")
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .tracking(1)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.orange)
+            )
     }
 }

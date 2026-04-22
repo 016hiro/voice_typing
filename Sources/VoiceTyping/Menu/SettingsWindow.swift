@@ -760,6 +760,31 @@ private struct ModelsTab: View {
                     }
                 }
             }
+
+            // v0.5.3 hands-free toggle. Inline (no SectionCard chrome) to
+            // fit the 600 px panel — the section above already grew the
+            // tab vertically. Disabled when the active backend is non-Qwen
+            // because hands-free needs the VAD pump that only the Qwen
+            // streaming path provides today.
+            Toggle(isOn: $state.handsFreeEnabled) {
+                HStack(spacing: 6) {
+                    Text("Hands-free mode")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("EXPERIMENTAL")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.25), in: RoundedRectangle(cornerRadius: 3))
+                        .foregroundStyle(.orange)
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!state.asrBackend.isQwen)
+            .help(state.asrBackend.isQwen
+                  ? "Tap Fn (under 200 ms) to enter hands-free: recording continues after release and auto-stops on silence. Tap Fn again to cancel. Hold Fn behaves as before."
+                  : "Hands-free requires a Qwen backend (it uses the VAD pump). Switch backend to enable.")
+            .padding(.horizontal, 4)
         }
         .alert("Delete \(pendingDelete?.displayName ?? "") files?",
                isPresented: .init(

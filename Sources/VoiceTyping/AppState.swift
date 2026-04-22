@@ -37,6 +37,14 @@ final class AppState: ObservableObject {
     /// Nil ⇒ capsule falls back to the status-derived label.
     @Published var capsuleOverlayText: String?
 
+    /// v0.5.3: true while a hands-free session is active (between Fn↑ that
+    /// triggered hands-free and stopRecording). Drives the capsule's
+    /// distinct visual state — colour shift + "HF" badge + early "tap Fn to
+    /// cancel" overlay — so the user can tell which mode they're in. Not
+    /// persisted; transient runtime flag managed by AppDelegate's hands-free
+    /// state machine.
+    @Published var handsFreeActive: Bool = false
+
     @Published var language: Language {
         didSet { UserDefaults.standard.set(language.rawValue, forKey: "language") }
     }
@@ -111,6 +119,20 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(debugCaptureRetentionDays, forKey: "debugCaptureRetentionDays") }
     }
 
+    /// v0.5.3 hands-free mode. When on, a short Fn tap (< 200 ms) enters a
+    /// hands-free recording state: audio capture continues after Fn↑ and the
+    /// session auto-stops after 1.5 s of post-speech silence, or 10 s of no
+    /// speech at all, or `RecordingPolicy.maxDuration` — whichever first.
+    /// Tap Fn again to cancel (discard).
+    ///
+    /// Off by default for v0.5.3 (dogfood opt-in) — tap Fn was effectively a
+    /// no-op before, so changing the gesture's meaning needs validation
+    /// before the default flips. Qwen backend only; the Settings toggle is
+    /// disabled when a Whisper backend is active.
+    @Published var handsFreeEnabled: Bool {
+        didSet { UserDefaults.standard.set(handsFreeEnabled, forKey: "handsFreeEnabled") }
+    }
+
     /// v0.3 custom vocabulary. Persisted via `CustomDictionary` to a JSON file.
     let dictionary = CustomDictionary()
 
@@ -175,6 +197,8 @@ final class AppState: ObservableObject {
         // membership rather than truthiness.
         let storedRetention = ud.object(forKey: "debugCaptureRetentionDays") as? Int
         self.debugCaptureRetentionDays = storedRetention ?? 7
+
+        self.handsFreeEnabled = ud.bool(forKey: "handsFreeEnabled")
 
         let backendRaw = ud.string(forKey: "asrBackend")
         let persisted = backendRaw.flatMap { ASRBackend(rawValue: $0) } ?? .default

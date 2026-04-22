@@ -77,6 +77,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// transcribe + inject complete.
     var currentDebugWriter: DebugCaptureWriter?
 
+    // MARK: - Hands-free state (v0.5.3)
+    //
+    // Mutated only on the main actor. See `AppDelegate+HandsFree.swift` for
+    // the state machine. Properties live here because Swift extensions can't
+    // hold stored properties.
+
+    /// Timestamp of the most recent Fn↓. Compared against now at Fn↑ to
+    /// branch tap-vs-hold (threshold = `HandsFree.tapThreshold`).
+    var fnPressTime: Date?
+
+    /// True between hands-free entry (Fn↑ < tapThreshold) and stopRecording.
+    /// Gates the VAD-event handler — events that fire before this is true
+    /// are no-ops.
+    var handsFreeActive: Bool = false
+
+    /// True after the first VAD speech event observed in the current
+    /// hands-free session. Used to cancel the no-speech timer.
+    var handsFreeSpeechObserved: Bool = false
+
+    /// Non-live timing modes need a VAD-only pump to source the speech
+    /// events. nil for live-mode hands-free (the LiveTranscriber's own
+    /// vadObserver covers it).
+    var handsFreeWatchdog: VADWatchdog?
+
+    /// Drains samples into `handsFreeWatchdog` in non-live mode. Replaces
+    /// the plain "drain to /dev/null" task in that path.
+    var handsFreeWatchdogIngestTask: Task<Void, Never>?
+
+    /// Fires after `HandsFree.noSpeechTimeout` if no VAD event arrives —
+    /// hands-free auto-cancel for accidental taps.
+    var handsFreeNoSpeechTask: Task<Void, Never>?
+
+    /// Armed after each `.speechEnded`; fires after
+    /// `HandsFree.postSpeechSilence` to trigger normal stopRecording.
+    /// Cancelled on subsequent `.speechStarted`.
+    var handsFreeSilenceTask: Task<Void, Never>?
+
     /// ASR-side state captured at Fn↓ when live mode is on. Refine/inject
     /// snapshots still happen at Fn↑ (latest user choice). Held early so the
     /// live transcribe and the dictionary-hit detection use a consistent
@@ -331,8 +368,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleFn(_ transition: FnHotkeyMonitor.Transition) {
         switch transition {
-        case .pressed:  startRecording()
-        case .released: stopRecording()
+        case .pressed:
+            // v0.5.3: Fn-tap during hands-free = cancel (discard audio).
+            // Same gesture as entry — symmetric and avoids reaching for esc.
+            if handsFreeActive {
+                cancelHandsFree()
+                return
+            }
+            fnPressTime = Date()
+            startRecording()
+        case .released:
+            // v0.5.3: tap-vs-hold decision happens here, not at Fn↓. Audio
+            // captured from t=0 either way, so no audio is lost regardless.
+            let pressedAt = fnPressTime
+            fnPressTime = nil
+            let duration: TimeInterval = pressedAt
+                .map { Date().timeIntervalSince($0) } ?? .infinity
+            if shouldEnterHandsFree(duration: duration) {
+                enterHandsFree()
+            } else {
+                stopRecording()
+            }
         }
     }
 
@@ -393,8 +449,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 asrContext: asrCtx
             )
 
-            // Live wiring (no-op when useLive is false — drains samples to /dev/null).
-            startLiveTranscriberIfEnabled(samples: outputs.samples, useLive: useLive)
+            // v0.5.3: if hands-free conditions might fire on Fn↑, wire a VAD
+            // observer up-front so the watchdog/live pump has it ready by the
+            // time the user releases. The observer is gated by
+            // `handsFreeActive` so events that fire before hands-free entry
+            // are no-ops.
+            let mightHandsFree = state.handsFreeEnabled
+                && activeBackend.isQwen
+                && cachedVADBox != nil
+            let vadObserver: LiveTranscriber.VADObserver?
+            if mightHandsFree {
+                let observer: LiveTranscriber.VADObserver = { [weak self] event in
+                    Task { @MainActor in self?.handleHandsFreeVAD(event) }
+                }
+                vadObserver = observer
+            } else {
+                vadObserver = nil
+            }
+
+            // v0.5.3: non-live + hands-free needs a VAD-only watchdog because
+            // LiveTranscriber isn't running. The watchdog will consume
+            // `outputs.samples` itself, so suppress the default drain.
+            let needsWatchdog = !useLive && mightHandsFree && cachedVADBox != nil
+
+            // Live wiring (no-op when useLive is false; drains samples to
+            // /dev/null unless the watchdog branch will consume them).
+            startLiveTranscriberIfEnabled(samples: outputs.samples,
+                                           useLive: useLive,
+                                           vadObserver: vadObserver,
+                                           drainIfNotLive: !needsWatchdog)
+
+            if needsWatchdog, let vadBox = cachedVADBox, let obs = vadObserver {
+                startHandsFreeWatchdog(samples: outputs.samples, vadBox: vadBox, observer: obs)
+            }
             // v0.5.1: countdown overlay near the cap. Live mode (cap=600) gets
             // a 60 s warning window; batch (cap=60) gets a 10 s window. Most
             // sessions never trigger because users rarely hold Fn near the cap.
@@ -435,7 +522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func clearRecordingDurationTimer() {
+    func clearRecordingDurationTimer() {
         recordingDurationTask?.cancel()
         recordingDurationTask = nil
         state.capsuleOverlayText = nil
@@ -446,11 +533,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    private func stopRecording() {
+    func stopRecording() {
         guard state.status == .recording else { return }
         let buffer = audio.stop()
         state.status = .transcribing
         clearRecordingDurationTimer()
+        // v0.5.3: tear down hands-free state if it was active. Safe to call
+        // unconditionally — no-op when handsFreeActive is already false.
+        cleanupHandsFreeState()
 
         // v0.5.1 Debug Capture: hand writer ownership off to the pipelineTask
         // (or abort on early return). Clearing the field eagerly so a quick
