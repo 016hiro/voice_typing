@@ -22,14 +22,14 @@
 - [ ] **快捷键可配置**：除 Fn 外提供 Right Option / Right Cmd 等替代方案；Settings 窗口加 hotkey picker。
 - [ ] **历史转录记录**：可选保存最近 N 条转录到 Settings → History 标签，支持复制/重新发送。
 
-> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。Post-record 流式 (opt-in experimental) 已落地在 v0.4.2，详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。Unit + E2E ASR 回归测试台已落地在 v0.4.3，详见 [../devlog/v0.4.3.md](../devlog/v0.4.3.md)。VAD bundle 预装 + 胶囊去文本 + refine 默认 Off + Advanced 设置 (Developer logging) 已落地在 v0.4.4，详见 [../devlog/v0.4.4.md](../devlog/v0.4.4.md)。VAD 调参 (minSpeech 0.3 / minSilence 0.7) + HallucinationFilter (训练尾巴 + prompt echo) 已落地在 v0.4.5，详见 [../devlog/v0.4.5.md](../devlog/v0.4.5.md)。真 live-mic 流式 + force-split 25s 已落地在 v0.5.0，详见 [../devlog/v0.5.0.md](../devlog/v0.5.0.md)。性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示 已落地在 v0.5.1，详见 [../devlog/v0.5.1.md](../devlog/v0.5.1.md)。
+> 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。Post-record 流式 (opt-in experimental) 已落地在 v0.4.2，详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。Unit + E2E ASR 回归测试台已落地在 v0.4.3，详见 [../devlog/v0.4.3.md](../devlog/v0.4.3.md)。VAD bundle 预装 + 胶囊去文本 + refine 默认 Off + Advanced 设置 (Developer logging) 已落地在 v0.4.4，详见 [../devlog/v0.4.4.md](../devlog/v0.4.4.md)。VAD 调参 (minSpeech 0.3 / minSilence 0.7) + HallucinationFilter (训练尾巴 + prompt echo) 已落地在 v0.4.5，详见 [../devlog/v0.4.5.md](../devlog/v0.4.5.md)。真 live-mic 流式 + force-split 25s 已落地在 v0.5.0，详见 [../devlog/v0.5.0.md](../devlog/v0.5.0.md)。性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示 已落地在 v0.5.1，详见 [../devlog/v0.5.1.md](../devlog/v0.5.1.md)。Transcription timing 三选一 Picker (行卡片设计) + 5 个 Python stdlib 分析脚本 (`Scripts/analysis/`) + devdoc 规范接入 已落地在 v0.5.2，详见 [../devlog/v0.5.2.md](../devlog/v0.5.2.md)。
 
 ## 中期 (v0.4+)
 
 - [ ] ~~**中英自动语种检测**~~：Qwen3-ASR 原生就支持中英混合输入（2026-04-18 实测 zh-CN hint 下混读英文仍转写正确）。保留 Whisper backend 的场景：它 code-switch 弱，仍需要语言选择 UI。v0.4.0 不再拿它做主线。
 - [x] ~~**流式转录 (post-record)**~~：v0.4.2 落地 opt-in experimental，VAD 分段 + 段级 Qwen 转写 + progressive 胶囊显示。详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。真 live-mic 留到下一项。
 - [x] ~~**真 live-mic 流式**~~：v0.5.0 落地 `LiveTranscriber` + `AudioCapture.samples` 流 + VAD 预热 + per-segment lock；force-split 同时升 10 → 25s。隐藏 toggle (`liveStreamingEnabled` UserDefaults)，dogfood 一周后加 UI。详见 [../devlog/v0.5.0.md](../devlog/v0.5.0.md)。
-- [ ] **VAD 自动停止 / Hands-free 模式**（留 v0.5.3）：tap Fn → 录音 → 检测到长时间静默自动结束；hold Fn 行为不变。v0.5.2 决定单独成版本——需要专门的 UX 设计（tap-vs-hold 检测、模式状态指示、abort 手势），混在 Live UI 公开里会拖时间并模糊版本主题。
+- [ ] **VAD 自动停止 / Hands-free 模式**（v0.5.3 主题，scope 见 [v0.5.3.md](v0.5.3.md)）：tap Fn → 录音 → 检测到长时间静默自动结束；hold Fn 行为不变。需要 7 个 UX 问题 /think 拍板（tap-vs-hold 阈值、状态 UI、abort 手势、与 live mode 协议、默认开关等）。
 - [ ] **更多 ASR 后端 + streaming 抽象**（v0.6.0 候选主题）：
   - `LiveTranscriber` 从硬类型 `QwenASRRecognizer` 抽象到 `SpeechRecognizer` 协议（前置）
   - `SpeechRecognizer` 协议补 `transcribeSegment` 同步入口（Qwen 已有 `transcribeSegmentSync`，Whisper 需要包一层）

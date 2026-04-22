@@ -123,6 +123,23 @@ jq -s 'group_by(.backend) | map({backend: .[0].backend, avg_audio_sec: ([.[] | .
 ffmpeg -i 2026-04-21_18-30-42_a1b2c3d4/audio.wav -codec:a libmp3lame -qscale:a 4 sample.mp3
 ```
 
+## 进阶分析
+
+v0.5.2 起在 [`Scripts/analysis/`](../Scripts/analysis/) 下提供 5 个 Python stdlib 脚本，覆盖上面 jq 查询答不动的几类问题：sessions/audio 总览 + 多维分组、HallucinationFilter 拦掉的段抽样、live mode drain 时间分布、focus drop 频率 per-app、per-segment ASR latency + RTF + cold/warm。
+
+```bash
+# 跑全套（`$ROOT` 指向 debug-captures 目录）
+ROOT=~/Library/Application\ Support/VoiceTyping/debug-captures
+cd Scripts/analysis
+python3 summary.py "$ROOT"
+python3 hallucination_review.py "$ROOT" --sample 20
+python3 live_drain.py "$ROOT"
+python3 focus_drop.py "$ROOT"
+python3 segment_latency.py "$ROOT"
+```
+
+零依赖（macOS 自带 `python3` 即可），决策矩阵 + 输出示例见 [`Scripts/analysis/README.md`](../Scripts/analysis/README.md)。
+
 ## 不在 capture 范围内的东西
 
 明确说明几条**不会**落盘的数据，方便用户自己检查：

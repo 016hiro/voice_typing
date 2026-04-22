@@ -6,12 +6,12 @@
 
 ## 当前 ship
 
-**v0.5.1** — 性能基线 instrument + dl_init 修 (cached prepare 5s → ~1s) + Debug capture toggle + UX 补丁。详见 [`devlog/v0.5.1.md`](devlog/v0.5.1.md)。
+**v0.5.2** — Transcription timing 三选一 Picker（行卡片 + chip + hover tooltip，视觉抄 RefineModeSegmented）+ 5 个 Python stdlib 分析脚本（`Scripts/analysis/`）+ devdoc 规范接入。dogfood 跑出 Qwen 0.6B RTF p95 0.27（4× 实时），同时揪出 DebugCaptureWriter 两个 bug 推到 v0.5.3。详见 [`devlog/v0.5.2.md`](devlog/v0.5.2.md)。
 
 最近三个里程碑（按时间倒序）：
+- **v0.5.2** — Transcription timing Picker + 5 Python 分析脚本 + devdoc 接入 + dogfood 揪 writer bug
 - **v0.5.1** — 性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示
 - **v0.5.0** — `LiveTranscriber` + 段级 incremental injection + force-split 10s → 25s
-- **v0.4.5** — VAD 调参 (0.3/0.7) + `HallucinationFilter`（训练尾巴 + prompt echo）
 
 完整历史见 [`devlog/`](devlog/) 目录。
 
@@ -19,9 +19,9 @@
 
 主题：**live mode 落地 + 真实使用反馈驱动的 polish + 数据基础设施**
 
-- **v0.5.1** ✅ — 性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示。7 项 Debug capture 决策全部锁定；B (修上游双读) 实测 <1% 占比，改为修 dl_init (HF HEAD 检查)。详见 [`devlog/v0.5.1.md`](devlog/v0.5.1.md) + [`todo/v0.5.1.md`](todo/v0.5.1.md)。
-- **v0.5.2** — Live mode Settings UI 公开（把 `liveStreamingEnabled` 从 UserDefaults-hidden 抬到 Settings → Models，同时把 "Streaming" 改名 "Post-record streaming" 避免与 Live 撞概念）+ `Scripts/analysis/` 4 个 Python stdlib 分析脚本前置 + dogfood 驱动 polish（TBD by data）。详见 [`todo/v0.5.2.md`](todo/v0.5.2.md)。
-- **v0.5.3** — VAD auto-stop / Hands-free 模式（tap Fn → 录音 → 检测长静默自停）。单独成版本因为需要 tap-vs-hold 检测 + 模式状态 UI + abort 手势等专门的 UX 设计，不适合混在 Live UI 公开里。
+- **v0.5.1** ✅ — 性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示
+- **v0.5.2** ✅ — Transcription timing Picker（双 Toggle → 三选一 + 自定义行卡片）+ 5 Python 分析脚本（含反思加的 `segment_latency.py`）+ devdoc 规范接入。dogfood 揪出 DebugCaptureWriter `meta.json` 缺失 + timestamp 秒精度两个 bug → 推 v0.5.3。详见 [`devlog/v0.5.2.md`](devlog/v0.5.2.md)
+- **v0.5.3** — Hands-free 模式（tap Fn → 录音 → 检测长静默自停）+ DebugCaptureWriter writer 修补（partial meta + fractional seconds + profile snippet wire-up）+ Qwen 0.6B prompt echo 调研（dogfood 实测 40% 段落是 dictionary 字面回显）。详见 [`todo/v0.5.3.md`](todo/v0.5.3.md)
 
 ## 中期 (v0.6+)
 

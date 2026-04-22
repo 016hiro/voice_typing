@@ -551,6 +551,108 @@ private struct RefineModeSegmented: View {
     }
 }
 
+/// v0.5.2: clickable row used by the Transcription timing stack. Visual
+/// vocabulary deliberately matches `RefineModeSegmented` — selected rows get
+/// the same opaque white gradient + inverse text + drop shadow; unselected
+/// rows sit in soft translucent containers.
+///
+/// Description copy lives in `.help(...)` (hover tooltip) rather than inline
+/// text so the whole Models tab still fits in the 600px panel. The chip
+/// (`DEFAULT` / `QWEN` / `EXPERIMENTAL`) carries the only constraint a
+/// first-time user needs at a glance; the "why" is one hover away.
+private struct TimingRow: View {
+    let title: String
+    let description: String
+    let badge: String?
+    let isSelected: Bool
+    let isEnabled: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(isSelected ? LG.textDark : LG.text)
+                    .modifier(TabLabelShadow(selected: isSelected))
+                Spacer(minLength: 6)
+                if let badge {
+                    TimingBadge(text: badge, selected: isSelected)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowBackground)
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1.0 : 0.38)
+        .help(description)
+        .animation(.easeOut(duration: 0.15), value: isSelected)
+    }
+
+    @ViewBuilder
+    private var rowBackground: some View {
+        if isSelected {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.92), Color(white: 0.92, opacity: 0.82)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.9), lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(0.22), radius: 6, y: 3)
+        } else {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.10), Color.white.opacity(0.03)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                )
+        }
+    }
+}
+
+/// Tiny right-aligned chip ("DEFAULT" / "QWEN" / "EXPERIMENTAL"). Inverts
+/// to dark-on-light when its parent row is selected so it stays legible
+/// against the bright material.
+private struct TimingBadge: View {
+    let text: String
+    let selected: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+            .tracking(0.6)
+            .foregroundStyle(selected ? LG.textDark.opacity(0.62) : LG.textFaint)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(selected ? Color.black.opacity(0.06) : Color.white.opacity(0.10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .strokeBorder(
+                                selected ? Color.black.opacity(0.10) : Color.white.opacity(0.14),
+                                lineWidth: 0.5
+                            )
+                    )
+            )
+            .fixedSize()
+    }
+}
+
 /// Two-row labeled field (label above, control below) — avoids macOS's
 /// `LabeledContent`-inside-`Form` rendering a ghost prompt column next to the
 /// label, which looked like a duplicated URL in v0.3 pre-release.
@@ -577,16 +679,57 @@ private struct ModelsTab: View {
 
     @State private var pendingDelete: ASRBackend?
 
-    private var streamingDescription: String {
-        if !state.asrBackend.isQwen {
-            return "Only Qwen3 backends stream. Switch to a Qwen model to enable."
+    private func timingTitle(_ timing: AppState.TranscriptionTiming) -> String {
+        switch timing {
+        case .oneshot:    return "After recording — one shot"
+        case .postrecord: return "After recording — segmented"
+        case .live:       return "While speaking — live"
         }
-        return "VAD-segmented ASR. Recordings can exceed 60s; the pipeline yields progressively so long inputs don't block. Silero VAD is bundled — no network on first use."
+    }
+
+    private func timingDescription(_ timing: AppState.TranscriptionTiming) -> String {
+        switch timing {
+        case .oneshot:
+            return "Transcribe once after you release Fn. Works with every backend."
+        case .postrecord:
+            return "VAD splits the recording so long (>60s) inputs don't block. Text lands segment by segment after Fn↑."
+        case .live:
+            return "Segments appear in the focused app while you speak. Refine is skipped in this mode."
+        }
+    }
+
+    /// Right-side chip. Nil for plain rows. The "QWEN" chip doubles as a
+    /// disabled-state hint — it shows on segmented/live rows even when Qwen
+    /// is active, so users learn the constraint before they switch backends.
+    private func timingBadge(_ timing: AppState.TranscriptionTiming) -> String? {
+        switch timing {
+        case .oneshot:    return "DEFAULT"
+        case .postrecord: return "QWEN"
+        case .live:       return "EXPERIMENTAL"
+        }
+    }
+
+    /// One-shot is always available (works on every backend); segmented and
+    /// live require Qwen for the streaming entry points. This is per-row
+    /// rather than whole-section so the user can still pick one-shot from a
+    /// Whisper backend without the section going entirely dark.
+    private func timingEnabled(_ timing: AppState.TranscriptionTiming) -> Bool {
+        switch timing {
+        case .oneshot:                 return true
+        case .postrecord, .live:       return state.asrBackend.isQwen
+        }
     }
 
     var body: some View {
         VStack(spacing: 14) {
-            SectionCard(title: "Speech Recognition Model") {
+            // v0.5.2: dropped the "Speech Recognition Model" title + the
+            // "Downloads cached under …" footer so the Models tab still fits
+            // in the fixed 600px panel after the Transcription timing
+            // SectionCard expanded. The 3 ModelRows self-name (Whisper /
+            // Qwen 0.6B / Qwen 1.7B) so the title is informational
+            // overhead; the cache path is documented in `docs/runbook.md`
+            // and reachable via Manage Models.
+            SectionCard {
                 VStack(spacing: 0) {
                     ForEach(ASRBackend.allCases) { backend in
                         ModelRow(
@@ -601,27 +744,21 @@ private struct ModelsTab: View {
                         }
                     }
                 }
-
-                Text("Downloads are cached under `~/Library/Application Support/VoiceTyping/models/` and kept until you delete them.")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(LG.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            SectionCard(title: "Streaming (experimental)") {
-                Toggle(isOn: $state.streamingEnabled) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("VAD-segmented transcription")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(LG.text)
-                            .fx()
-                        Text(streamingDescription)
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(LG.textDim)
-                            .fixedSize(horizontal: false, vertical: true)
+            SectionCard(title: "Transcription timing") {
+                VStack(spacing: 8) {
+                    ForEach(AppState.TranscriptionTiming.allCases) { timing in
+                        TimingRow(
+                            title: timingTitle(timing),
+                            description: timingDescription(timing),
+                            badge: timingBadge(timing),
+                            isSelected: state.transcriptionTiming == timing,
+                            isEnabled: timingEnabled(timing),
+                            onTap: { state.transcriptionTiming = timing }
+                        )
                     }
                 }
-                .disabled(!state.asrBackend.isQwen)
             }
         }
         .alert("Delete \(pendingDelete?.displayName ?? "") files?",

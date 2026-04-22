@@ -13,6 +13,20 @@ final class AppState: ObservableObject {
         case info(String)
     }
 
+    /// v0.5.2: user-facing "when do I want text to appear?" choice. Three
+    /// mutually-exclusive options backed by the existing
+    /// `streamingEnabled` / `liveStreamingEnabled` UserDefaults keys (no new
+    /// key, no migration). `live` takes precedence over `postrecord` — see
+    /// `transcriptionTiming`'s getter. Replaces the pre-v0.5.2 dual-toggle UI
+    /// that users found confusing ("two Streamings?").
+    enum TranscriptionTiming: String, CaseIterable, Identifiable {
+        case oneshot
+        case postrecord
+        case live
+
+        var id: String { rawValue }
+    }
+
     @Published var status: CapsuleStatus = .idle
     @Published var capsuleVisible: Bool = false
 
@@ -48,6 +62,10 @@ final class AppState: ObservableObject {
     /// v0.4.2 experimental: route transcription through VAD-segmented streaming
     /// so the capsule reveals text progressively and long (>60s) recordings work.
     /// Qwen backends only — Whisper has no streaming path. Off by default.
+    ///
+    /// v0.5.2: surfaced via `transcriptionTiming` as the "post-record" choice;
+    /// the UserDefaults key is kept for backward compat and remains the
+    /// backing store.
     @Published var streamingEnabled: Bool {
         didSet { UserDefaults.standard.set(streamingEnabled, forKey: "streamingEnabled") }
     }
@@ -57,10 +75,10 @@ final class AppState: ObservableObject {
     /// perceived post-release latency drops from `ASR(total_audio)` to
     /// `ASR(last_segment) + drain`.
     ///
-    /// No Settings UI yet — toggle via:
-    ///   `defaults write com.voicetyping.app liveStreamingEnabled -bool true`
-    /// Will get a UI toggle once dogfood data confirms VAD quality on real
-    /// mic noise matches what fixtures showed (the v0.5.0 release plan).
+    /// v0.5.2: now surfaced via `transcriptionTiming` (the "live" choice).
+    /// The UserDefaults key is still the backing store so
+    /// `defaults write com.voicetyping.app liveStreamingEnabled -bool true`
+    /// still works as an alternate entry point.
     /// Qwen backends only; takes precedence over `streamingEnabled` when on.
     @Published var liveStreamingEnabled: Bool {
         didSet { UserDefaults.standard.set(liveStreamingEnabled, forKey: "liveStreamingEnabled") }
@@ -222,6 +240,32 @@ final class AppState: ObservableObject {
         case .transcribing:     return "Transcribing"
         case .refining:         return "Refining"
         case .info(let msg):    return msg
+        }
+    }
+
+    /// v0.5.2: single-choice view over the two streaming bool flags. Reads pick
+    /// `live` first (matching runtime precedence), then `postrecord`, else
+    /// `oneshot`. Writes zero the other bool so switching away from a mode
+    /// leaves no stale flag behind (user flipping live → postrecord won't
+    /// silently keep live running).
+    var transcriptionTiming: TranscriptionTiming {
+        get {
+            if liveStreamingEnabled { return .live }
+            if streamingEnabled { return .postrecord }
+            return .oneshot
+        }
+        set {
+            switch newValue {
+            case .oneshot:
+                streamingEnabled = false
+                liveStreamingEnabled = false
+            case .postrecord:
+                streamingEnabled = true
+                liveStreamingEnabled = false
+            case .live:
+                streamingEnabled = false
+                liveStreamingEnabled = true
+            }
         }
     }
 }
