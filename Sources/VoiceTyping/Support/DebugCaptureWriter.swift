@@ -127,10 +127,21 @@ final class DebugCaptureWriter: @unchecked Sendable {
         return DebugCaptureWriter(folder: folder, meta: meta)
     }
 
-    private init(folder: URL, meta: Meta) {
+    /// Internal so tests can construct a writer rooted at a temp folder
+    /// without going through `begin(state:...)`. Production callers must use
+    /// `begin(...)` so the AppState toggle is honored and the directory is
+    /// created with the canonical timestamped name.
+    init(folder: URL, meta: Meta) {
         self.folder = folder
         self.meta = meta
         self.queue = DispatchQueue(label: "voicetyping.debugcapture.\(meta.sessionId)", qos: .utility)
+        // v0.5.3 fix: write a partial meta.json immediately. Previously meta
+        // was only written from finalize/abort, so any crash / force-quit /
+        // early bail left the session dir without metadata (12% of dogfood
+        // sessions had usable meta in v0.5.2).
+        queue.async { [weak self] in
+            self?.writeMeta()
+        }
     }
 
     // MARK: - Append API
@@ -170,15 +181,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.totalAudioSec = audio.duration
             self.meta.totalSegments = self.segmentCount
             self.meta.totalInjections = self.injectionCount
-            do {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                encoder.dateEncodingStrategy = .iso8601
-                let data = try encoder.encode(self.meta)
-                try data.write(to: self.folder.appendingPathComponent("meta.json"), options: .atomic)
-            } catch {
-                Log.app.warning("DebugCaptureWriter: meta.json write failed: \(error.localizedDescription, privacy: .public)")
-            }
+            self.writeMeta()
             Log.app.info("DebugCapture session: \(self.meta.sessionId, privacy: .public) — \(self.segmentCount, privacy: .public) seg, \(self.injectionCount, privacy: .public) inj, \(audio.duration, format: .fixed(precision: 1))s audio → \(self.folder.lastPathComponent, privacy: .public)")
         }
     }
@@ -193,25 +196,27 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.endedAt = Date()
             self.meta.totalSegments = self.segmentCount
             self.meta.totalInjections = self.injectionCount
-            do {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-                encoder.dateEncodingStrategy = .iso8601
-                let data = try encoder.encode(self.meta)
-                try data.write(to: self.folder.appendingPathComponent("meta.json"), options: .atomic)
-            } catch {
-                // Swallow — abort is best-effort.
-            }
+            self.writeMeta()
         }
     }
 
     // MARK: - File helpers
 
+    /// Writes meta.json with the current `meta` value. Called from the serial
+    /// queue; safe to invoke multiple times (init writes partial; finalize/abort
+    /// overwrite atomically with final fields populated).
+    private func writeMeta() {
+        do {
+            let data = try Self.metaEncoder.encode(self.meta)
+            try data.write(to: self.folder.appendingPathComponent("meta.json"), options: .atomic)
+        } catch {
+            Log.app.warning("DebugCaptureWriter: meta.json write failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     private func appendJSONL<T: Encodable>(_ rec: T, file url: URL) {
         do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            var data = try encoder.encode(rec)
+            var data = try Self.jsonlEncoder.encode(rec)
             data.append(0x0A) // '\n'
             if FileManager.default.fileExists(atPath: url.path) {
                 let handle = try FileHandle(forWritingTo: url)
@@ -225,6 +230,36 @@ final class DebugCaptureWriter: @unchecked Sendable {
             Log.app.warning("DebugCaptureWriter: JSONL append failed: \(error.localizedDescription, privacy: .public)")
         }
     }
+
+    // v0.5.3 fix: ISO8601 with fractional seconds. The default `.iso8601`
+    // strategy emits seconds-only timestamps, which collapsed `endedAt -
+    // last inject` deltas to 0 ms in live_drain.py. ISO8601DateFormatter is
+    // documented thread-safe but predates Sendable; the `nonisolated(unsafe)`
+    // is the explicit acknowledgement.
+    nonisolated(unsafe) private static let iso8601Fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let metaEncoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        e.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(iso8601Fractional.string(from: date))
+        }
+        return e
+    }()
+
+    private static let jsonlEncoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(iso8601Fractional.string(from: date))
+        }
+        return e
+    }()
 
     /// Writes a 16 kHz mono Float32 WAV. Standard PCM Float32 format —
     /// readable by ffmpeg, sox, Audacity, QuickTime, and the test
