@@ -20,6 +20,10 @@
 
 - **闭包 type inference 偶尔挂在 `.map { x in ... }`**：复杂泛型上下文里 Swift 推不出闭包参数类型。规避：`if let x = optional { ... }` 改写，或显式 `(Type) -> ReturnType in` 标注。(v0.5.1)
 
+- **`@Sendable` closure 在三元运算里 type inference 失败**：`let x: T? = cond ? { ... } : nil` 触发 "failed to produce diagnostic" 编译器 bug。规避：拆成 `if cond { let observer: T = { ... }; x = observer } else { x = nil }`。(v0.5.3)
+
+- **`ISO8601DateFormatter` 不是 Sendable 但事实上线程安全**：Apple 文档说 thread-safe，类没标 Sendable，Swift 6 strict concurrency 报错。规避：`nonisolated(unsafe) static let formatter = ...`。同类问题不适用 `JSONEncoder`（它本身 Sendable，加 `nonisolated(unsafe)` 反而 warning）。(v0.5.3)
+
 ## ASR backend specifics
 
 - **MLX 缺 metallib 直接 abort 不抛 Swift error**：`MLX.loadArrays` 找不到 `mlx.metallib` 触发 C++ `std::runtime_error`，绕开 Swift 错误处理直接 SIGABRT。规避：`MLXSupport.isAvailable` 在调任何 MLX API 前先 file-existence preflight，不可用就 graceful 降级到 Whisper backend。(v0.2.0)
@@ -41,6 +45,12 @@
 - **Silero VAD 默认参数为低延迟流式调，不是转写质量调**：`(0.25s speech, 0.10s silence)` 切出来切到词中间，丢上下文。规避：转写场景用 `minSpeechDuration: 0.3` + `minSilenceDuration: 0.7`（v0.4.5 拍板）。(v0.4.5)
 
 - **Qwen3-ASR 短/弱音频会吐训练集尾巴 + 回显 prompt**：常见幻觉 `"谢谢观看"` / `"Thank you."` / `"Yeah."`，或者把 glossary context 整段 echo 回来。规避：`HallucinationFilter` 静态黑名单 + substring containment 检测，不只关键字匹配。(v0.4.5)
+
+- **`AsyncStream` 是单消费者**：v0.5.3 hands-free 在 non-live timing 下需要 VAD watchdog 同时消费 `AudioCapture.samples`，但 `startLiveTranscriberIfEnabled` 默认会 drain 同一 stream → 两个消费者抢，watchdog 拿不到 chunks。规避：给 `startLiveTranscriberIfEnabled` 加 `drainIfNotLive: Bool` 参数，watchdog 路径下传 false 自己接管 drain。(v0.5.3)
+
+- **DebugCaptureWriter `meta.json` 直到 finalize 才写**：v0.5.1 设计漏 — crash / force-quit / early bail 路径让 `meta.json` 永远缺席。dogfood 303 sessions 只有 12% 完整率。规避：v0.5.3 起 init() 末尾 enqueue partial meta 写入，finalize/abort 复用同一 `writeMeta()` update endedAt + totals。(v0.5.3)
+
+- **`encoder.dateEncodingStrategy = .iso8601` 默认无 fractional seconds**：写出来 `2026-04-23T19:13:19Z` 秒级精度，跨毫秒 delta 全报 0ms（live_drain.py 全失效）。规避：用 `.custom { ... ISO8601DateFormatter([.withInternetDateTime, .withFractionalSeconds]) ... }`。(v0.5.3)
 
 ## 构建 / 资源 bundle
 

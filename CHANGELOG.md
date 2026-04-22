@@ -3,7 +3,17 @@
 本项目所有**面向用户**的变更记录在此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
 ## Unreleased
-- _（下个版本的用户可见变更在此累积）_
+
+### Added
+- **Hands-free 模式**（Settings → Models, EXPERIMENTAL）：开启后短按 Fn（< 200ms）= 录音继续，1.5 秒静默自动停。再按 Fn = 取消丢弃。长按 Fn 行为不变。仅 Qwen 后端可用，所有 3 种 transcription timing 都支持。默认关闭 (dogfood opt-in)
+- 胶囊 hands-free 视觉：morse 染橙 + "HF" 角标 + 进入时显示 "TAP FN TO CANCEL" 3 秒
+
+### Changed
+- 录音时长 cap 抽到单一来源 `RecordingPolicy.maxDuration(timing:backend:)`：live + Qwen = 600s，其他 = 60s。hands-free 共用同一规则
+
+### Fixed
+- **DebugCaptureWriter `meta.json` 缺失**：v0.5.2 dogfood 12% 完整率 → 现在 begin() 立刻写 partial meta，crash/force-quit 也能保留元数据
+- **DebugCaptureWriter timestamp 秒精度**：`live_drain.py` 因为 `endedAt` 和 last inject 经常落同一秒报 0ms drain 全失效，现在 ISO8601 加 fractional seconds
 
 ## v0.5.2 — 2026-04-23
 

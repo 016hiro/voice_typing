@@ -1,6 +1,6 @@
 # VoiceTyping 架构
 
-> 截至 v0.5.1。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)、v0.4.3 ASR 回归测试台、v0.4.4 Silero VAD bundle 预装 + refine 默认 Off + Developer logging、v0.4.5 VAD 调参 (minSpeech 0.3 / minSilence 0.7) + HallucinationFilter (训练尾巴 + prompt echo)、v0.5.0 真 live-mic 流式 (LiveTranscriber + AudioCapture samples stream + VAD 预热) + force-split 阈值 10s → 25s、v0.5.1 性能基线 instrument + dl_init 修 (cached prepare 5s → ~1s) + Debug Data Capture toggle + 首次启动检测不完整模型。
+> 截至 v0.5.3。本文档跟随代码同步更新，发现不一致以代码为准。近期里程碑：v0.3.1 per-app 上下文 profile、v0.4.1 API key Keychain 迁移 + 稳定签名 + CI、v0.4.2 流式转录 (opt-in experimental)、v0.4.3 ASR 回归测试台、v0.4.4 Silero VAD bundle 预装 + refine 默认 Off + Developer logging、v0.4.5 VAD 调参 + HallucinationFilter、v0.5.0 真 live-mic 流式 (LiveTranscriber)、v0.5.1 性能基线 instrument + dl_init 修 + Debug Data Capture toggle、v0.5.2 Transcription timing Picker + Python 分析脚本、v0.5.3 Hands-free 模式 (tap Fn → VAD 自动停) + RecordingPolicy 抽取作为录音上限单一来源 + DebugCaptureWriter partial meta + ISO8601 fractional seconds。
 
 ## 1. 概览
 
@@ -463,6 +463,63 @@ public func transcribeStream(...) -> AsyncThrowingStream<TranscriptionSegment, E
 
 **Whisper 不支持**：`ASRBackend.isQwen` 是唯一 gate。Settings toggle 在 Whisper 下 `.disabled`；`useStreaming` 计算为 false 时走 batch 路径。
 
+### 5.12 Recording duration cap（v0.5.3）
+
+录音上限的 single source of truth：[`RecordingPolicy.maxDuration(timing:backend:)`](../Sources/VoiceTyping/Support/RecordingPolicy.swift)。`AppDelegate.startRecording` (hold 路径) 和 v0.5.3 hands-free 路径都查它。改 cap 只能改这一处。
+
+| 条件 | Cap | 理由 |
+|---|---|---|
+| `timing == .live && backend.isQwen` | **600s** | per-segment 设计无单 ASR 调用风险；38MB 内存上限可承受 |
+| 其他所有组合 | **60s** | bound 单次 `Qwen.transcribe` / `Whisper batch` 调用风险 |
+
+为什么不让 hands-free 自己配 cap：hands-free 只是改 *什么时候停录音*（VAD 静默 vs Fn 释放），录音容量风险不变。
+
+注意 `live + Whisper` 是防御性的：live mode 在调用点已经 gate 到 Qwen（Whisper 没 streaming），但 RecordingPolicy 双保险——若 gate 漏了，cap 自动落 60s 而不是允许 10 分钟 Whisper batch。
+
+### 5.13 Hands-free 模式（v0.5.3）
+
+**入口**：tap Fn（按下 < 200ms 即释放）。**出口**：1.5s post-speech 静默 / 10s no-speech 自动取消 / `RecordingPolicy.maxDuration` cap / 用户再 tap Fn 取消。**默认**：OFF（dogfood opt-in）。**适用**：Qwen backend × 全 3 种 timing（one-shot / post-record / live）；Whisper 不支持，Settings toggle 灰掉。
+
+**关键决策**：tap-vs-hold 在 Fn↑ 时测量，**音频从 t=0 一直录**——决策延后到 Fn↑ 不丢任何音频。常量在 [`HandsFree`](../Sources/VoiceTyping/AppDelegate+HandsFree.swift) enum，`HandsFreeTests.swift` 锁定值。
+
+```mermaid
+flowchart TD
+    FnDown["Fn↓"] --> StartRec["startRecording (audio 从 t=0)"]
+    StartRec --> RouteVAD{"useLive?"}
+    RouteVAD -- yes --> LT["LiveTranscriber + vadObserver"]
+    RouteVAD -- no --> HFEnabled{"hands-free<br/>enabled + Qwen?"}
+    HFEnabled -- no --> Drain["drain samples"]
+    HFEnabled -- yes --> Watchdog["VADWatchdog<br/>(VAD-only pump)"]
+
+    LT --> WaitFnUp["wait Fn↑"]
+    Watchdog --> WaitFnUp
+    Drain --> WaitFnUp
+
+    WaitFnUp --> ShouldHF{"duration < 200ms<br/>+ enabled + Qwen?"}
+    ShouldHF -- no --> StopRec["stopRecording (现有路径)"]
+    ShouldHF -- yes --> EnterHF["enterHandsFree<br/>arm 10s no-speech timer<br/>capsule 'TAP FN TO CANCEL' 3s"]
+
+    EnterHF --> VADPump["VAD events 进入 handler"]
+    VADPump --> SS{"event"}
+    SS -- speechStarted --> CancelStop["cancel pending stop<br/>+ mark observed"]
+    SS -- speechEnded --> ArmStop["arm 1.5s silence timer"]
+    CancelStop --> VADPump
+    ArmStop --> SilenceFire["timer fire → stopRecording"]
+
+    EnterHF -.user tap Fn during HF.-> CancelHF["cancelHandsFree<br/>(audio.stop, no inject,<br/>writer.abort 留 partial meta)"]
+    EnterHF -.10s 无 VAD event.-> CancelHF
+```
+
+**两个 VAD 来源**：
+- **Live mode**：复用 `LiveTranscriber`，新加的 `VADObserver` 钩子在转写前就 fire `.speechStarted` / `.speechEnded` 给 hands-free handler，零额外 VAD pump
+- **Non-live (one-shot / post-record)**：[`VADWatchdog`](../Sources/VoiceTyping/ASR/VADWatchdog.swift) 跑独立 `StreamingVADProcessor` (无 recognizer)，只发 VAD 事件。`startLiveTranscriberIfEnabled(drainIfNotLive: false)` 让出 sample stream 所有权给 watchdog（AsyncStream 单消费者陷阱，详见 [gotchas.md](gotchas.md)）
+
+**State machine 在 [`AppDelegate+HandsFree.swift`](../Sources/VoiceTyping/AppDelegate+HandsFree.swift)**。属性挂在 `AppDelegate` 主类（Swift extension 不能加 stored property）。`stopRecording` / `clearRecordingDurationTimer` 因此从 `private` 提到 `internal`。
+
+**为什么 default OFF**：tap Fn 之前是 no-op，开 hands-free 改了用户已有的 muscle memory。dogfood 验证 200ms / 1.5s / 10s 阈值合理 + 0 严重投诉之后 v0.5.4 再考虑翻 ON。
+
+**为什么不支持 Whisper**：v0.5.3 简化范围。Whisper 没 streaming 入口，watchdog 拿到 VAD 事件了但 stop 时还是走 Whisper batch 转写整段 60s 上限——可以做，但牵到 v0.6.0 `SpeechRecognizer` 协议化主题更合适。
+
 ## 6. 并发与线程模型
 
 主要的 isolation 策略：
@@ -564,7 +621,7 @@ public func transcribeStream(...) -> AsyncThrowingStream<TranscriptionSegment, E
 - Metal Toolchain 未装时 Qwen 后端不可用（但 app 不再崩，降级到 Whisper）。
 - 首次运行没跑 `make setup-cert` 时仍是 ad-hoc 签名，TCC 授权重建失效；跑过一次后稳定。
 - Fn 监听仅基于 `kCGEventFlagsChanged.maskSecondaryFn`，未处理 NX_SYSDEFINED 系统事件子类型（部分外接键盘可能用此路径）。
-- 录音长度安全上限 60 秒（[`AudioCapture.maxDuration`](../Sources/VoiceTyping/Audio/AudioCapture.swift)）。录音 < 400 samples（25 ms）会被 guard 拦截，不送 ASR（防 `WhisperFeatureExtractor` 空数组索引越界）。**流式模式绕开 Qwen per-segment `maxTokens: 448` 限**（VAD 切段后每段 <10s），但 60s 录音硬上限仍在 —— 真 live-mic 解这个限是 v0.5 的事。
+- 录音长度安全上限走 [`RecordingPolicy.maxDuration(timing:backend:)`](../Sources/VoiceTyping/Support/RecordingPolicy.swift)（v0.5.3 抽出来的 single source of truth）：live + Qwen = 600s，其他组合 = 60s。录音 < 400 samples（25 ms）会被 guard 拦截，不送 ASR（防 `WhisperFeatureExtractor` 空数组索引越界）。Hands-free 不独立配 cap，跟 hold 路径同源 —— 详见 §5.12。
 - WhisperKit 的下载进度是 indeterminate（上游 API 不暴露），只有 Qwen 后端有实时百分比。
 - 词典软上限 500 条（非硬 cap），真正限制是注入时的 token budget（Whisper 200 / Qwen 460 / LLM 1500）。
 - Qwen context 是声学锚定而非发音替换——"配森→Python"类跨语种重写由 LLM refiner 的 glossary `Rewrite` 段处理，不是 ASR 的职责。
