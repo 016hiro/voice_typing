@@ -358,14 +358,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Decide live mode up-front so we can pass the right maxDuration cap
-        // (live mode tolerates long sessions; batch caps at 60 s to bound
-        // single-shot Qwen.transcribe risk).
+        // Decide live mode up-front so we can pass the right maxDuration cap.
+        // Cap derives from `RecordingPolicy.maxDuration` — single source of
+        // truth shared with the v0.5.3 hands-free path.
         let useLive = state.liveStreamingEnabled
             && activeBackend.isQwen
             && (recognizer is QwenASRRecognizer)
             && cachedVADBox != nil
-        let cap: TimeInterval = useLive ? 600 : 60
+        let cap = RecordingPolicy.maxDuration(timing: state.transcriptionTiming,
+                                               backend: activeBackend)
 
         do {
             let outputs = try audio.start(maxDuration: cap)
