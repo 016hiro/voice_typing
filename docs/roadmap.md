@@ -23,7 +23,7 @@
 
 - **v0.5.1** ✅ — 性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示
 - **v0.5.2** ✅ — Transcription timing Picker（双 Toggle → 三选一 + 自定义行卡片）+ 5 Python 分析脚本（含反思加的 `segment_latency.py`）+ devdoc 规范接入。dogfood 揪出 DebugCaptureWriter `meta.json` 缺失 + timestamp 秒精度两个 bug → 推 v0.5.3。详见 [`devlog/v0.5.2.md`](devlog/v0.5.2.md)
-- **v0.5.3** in-flight — Hands-free 模式（tap Fn 入口 + VAD 自动停 + tap-cancel）+ DebugCaptureWriter 修（partial meta + fractional seconds）+ RecordingPolicy 抽取（hands-free / hold 共用单一 cap 规则）+ Qwen 0.6B prompt echo 调研（pending：要先收 1.7B 对比数据）。详见 [`todo/v0.5.3.md`](todo/v0.5.3.md)
+- **v0.5.3** in-flight — Hands-free 模式（tap Fn 入口 + VAD 自动停 + tap-cancel）+ DebugCaptureWriter 修（partial meta + fractional seconds）+ RecordingPolicy 抽取（hands-free / hold 共用单一 cap 规则）。原定第三块 Qwen 0.6B echo 调研移到 [`todo/backlog.md` 数据驱动调研段](todo/backlog.md)，不卡版本节奏。详见 [`todo/v0.5.3.md`](todo/v0.5.3.md)
 
 ## 中期 (v0.6+)
 

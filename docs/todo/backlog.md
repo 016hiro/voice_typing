@@ -29,7 +29,7 @@
 - [ ] ~~**中英自动语种检测**~~：Qwen3-ASR 原生就支持中英混合输入（2026-04-18 实测 zh-CN hint 下混读英文仍转写正确）。保留 Whisper backend 的场景：它 code-switch 弱，仍需要语言选择 UI。v0.4.0 不再拿它做主线。
 - [x] ~~**流式转录 (post-record)**~~：v0.4.2 落地 opt-in experimental，VAD 分段 + 段级 Qwen 转写 + progressive 胶囊显示。详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。真 live-mic 留到下一项。
 - [x] ~~**真 live-mic 流式**~~：v0.5.0 落地 `LiveTranscriber` + `AudioCapture.samples` 流 + VAD 预热 + per-segment lock；force-split 同时升 10 → 25s。隐藏 toggle (`liveStreamingEnabled` UserDefaults)，dogfood 一周后加 UI。详见 [../devlog/v0.5.0.md](../devlog/v0.5.0.md)。
-- [ ] **VAD 自动停止 / Hands-free 模式**（v0.5.3 主题，scope 见 [v0.5.3.md](v0.5.3.md)）：tap Fn → 录音 → 检测到长时间静默自动结束；hold Fn 行为不变。需要 7 个 UX 问题 /think 拍板（tap-vs-hold 阈值、状态 UI、abort 手势、与 live mode 协议、默认开关等）。
+- [x] ~~**VAD 自动停止 / Hands-free 模式**~~：v0.5.3 落地。tap Fn < 200ms → 录音 → 1.5s 静默自停 / 10s no-speech 自动取消 / 再 tap Fn 取消。Qwen-only × 全 3 种 timing 模式。默认 OFF（dogfood opt-in）。详见 [v0.5.3.md](v0.5.3.md)。阈值 dogfood 校准进 "数据驱动调研" 段。
 - [ ] **更多 ASR 后端 + streaming 抽象**（v0.6.0 候选主题）：
   - `LiveTranscriber` 从硬类型 `QwenASRRecognizer` 抽象到 `SpeechRecognizer` 协议（前置）
   - `SpeechRecognizer` 协议补 `transcribeSegment` 同步入口（Qwen 已有 `transcribeSegmentSync`，Whisper 需要包一层）
@@ -46,6 +46,48 @@
 - [ ] 通知中心 widget / 实时听写浮窗
 - [ ] 语音命令模式（说"打开 Safari"触发动作）—— v0.6.0 候选
 - [ ] App Store 发行：需要正式签名 + sandbox 适配（TIS、CGEventTap 在 sandbox 下不可用 → 改成 helper agent 架构）
+
+## 数据驱动调研 — 长期 不卡版本
+
+> 这一段收**需要 dogfood 数据先到位才能决策**的事。不绑定具体版本，跑在主线版本节奏旁边，数据齐了 + 决策做了之后随便挂哪个 patch release 都行。
+>
+> 跟"长期 / 想法池"的区别：**这些是有明确产出物的**（"换方案 X / 调参数 Y"），只是当前缺数据；想法池是连方向都还在想的。
+
+### Qwen 0.6B prompt echo 调研（v0.5.2 dogfood 数据揭示，v0.5.3 移出 scope）
+
+**现象**：v0.5.2 dogfood 50 段里 20 段（**40%**）是 dictionary 列表 `'热词：Python、Qwen3-ASR、VAD、E2E、Rust。'` 的字面回显——HallucinationFilter 抓得准（误杀率 0%），但 echo 频率本身离谱（远高于 5% baseline）。
+
+**观察**：
+- 100% 落在 Qwen 0.6B（dogfood 没用 1.7B 数据可比）
+- 集中在**短音频段**（多数 0.3-1.6s）
+- 现有 user 100% 走 0.6B（自己挑的）
+
+**候选方案**（按可能性 / 成本排）：
+
+| 方案 | 描述 | 成本 | 风险 |
+|---|---|---|---|
+| (a) 短音频跳 dictionary prompt | < 2s 段不注入 dictionary 上下文 | 小 | dictionary 命中率下降 |
+| (b) dictionary 改 logits bias | 不进 prompt 就不会被 echo | 大（要碰 ASR generation 层）| 兼容性 |
+| (c) 默认升 1.7B | 0.6B 仅在 streaming 用 | 极小 | 加载时间 + 显存翻倍 |
+| (d) HallucinationFilter 加 dictionary substring match | v0.5.2 已经做了 | 0 | 已生效 |
+
+**决策依赖**：
+1. 先跑 1.7B 一段时间看 echo rate 是否同样高（**这是当前阻塞**）
+2. 测 (a) 方案 dictionary 命中率影响（数据齐后做）
+
+**推断**：1.7B echo 显著低 → (c) 最简单，直接换默认。如果都高 → (a) 或 (b)。
+
+**advancement criteria**：echo rate ≤ 10%（取决于选定方案）
+
+### Hands-free 阈值校准（v0.5.3 dogfood 触发）
+
+v0.5.3 拍板的 200ms tap 阈值 / 1.5s post-speech 静默 / 10s no-speech 自动取消，需要 dogfood 验证：
+
+- tap 阈值是不是过严或过松（用户键盘 ergonomic 差异）
+- 1.5s 静默是不是会卡断思考停顿
+- 10s no-speech 是不是会误杀慢启动用户
+
+**advancement criteria**：3 天 dogfood 0 严重投诉 → 不动；有投诉 → 调参 + 加 Settings 滑块
 
 ## v0.3.0 派生 / 后续优化
 
