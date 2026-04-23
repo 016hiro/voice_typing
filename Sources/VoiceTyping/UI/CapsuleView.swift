@@ -24,7 +24,10 @@ struct CapsuleView: View {
                 .font(.system(size: 16, weight: .medium, design: .monospaced))
                 .tracking(2)
                 .textCase(.uppercase)
-                .foregroundStyle(.primary)
+                // v0.5.3: status text follows the morse tint in hands-free
+                // so the overall capsule reads as one warm-orange block
+                // rather than mixed orange + white.
+                .foregroundStyle(state.handsFreeActive ? AnyShapeStyle(Color.orange) : AnyShapeStyle(HierarchicalShapeStyle.primary))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .fixedSize(horizontal: true, vertical: false)
