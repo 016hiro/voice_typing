@@ -175,7 +175,11 @@ final class DebugCaptureWriterTests: XCTestCase {
             // finalize). Fall through and fulfill so callers don't hang.
             exp.fulfill()
         }
-        wait(for: [exp], timeout: 2.0)
+        // Timeout headroom for slow CI disks: the 100×10ms polling loop is ~1s
+        // nominal locally but file IO per iteration can push total wall time
+        // past 2s on the macos-15 runner. 5s leaves ample slack while still
+        // surfacing real hangs.
+        wait(for: [exp], timeout: 5.0)
     }
 
     private func loadMeta(at url: URL) throws -> [String: Any] {
