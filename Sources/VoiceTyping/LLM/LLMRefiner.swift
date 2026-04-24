@@ -109,7 +109,7 @@ final class LLMRefiner: Sendable {
             "temperature": 0,
             "messages": [
                 ["role": "system", "content": system],
-                ["role": "user",   "content": user]
+                ["role": "user", "content": user]
             ]
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)

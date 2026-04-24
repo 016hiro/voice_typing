@@ -89,7 +89,7 @@ final class CapsuleWindow: NSPanel {
             host.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             host.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             host.topAnchor.constraint(equalTo: container.topAnchor),
-            host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            host.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         self.hostingView = host
     }

@@ -43,7 +43,7 @@ final class ModelStoreTests: XCTestCase {
     func testRepair_Whisper_RemovesIncompleteSubdir() throws {
         try seedWhisper(audioBytes: 50, textBytes: 2_000_000, melBytes: 200_000)
         let audioDir = whisperBase.appendingPathComponent("AudioEncoder.mlmodelc", isDirectory: true)
-        let textDir  = whisperBase.appendingPathComponent("TextDecoder.mlmodelc",  isDirectory: true)
+        let textDir  = whisperBase.appendingPathComponent("TextDecoder.mlmodelc", isDirectory: true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: audioDir.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: textDir.path))
 

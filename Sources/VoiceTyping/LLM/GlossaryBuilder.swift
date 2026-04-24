@@ -150,15 +150,13 @@ enum GlossaryBuilder {
         let lowered = text.lowercased()
         var hits: Set<UUID> = []
         for entry in entries {
-            if let _ = entry.term.nilIfEmpty, contains(term: entry.term, in: text, lowered: lowered) {
+            if entry.term.nilIfEmpty != nil, contains(term: entry.term, in: text, lowered: lowered) {
                 hits.insert(entry.id)
                 continue
             }
-            for hint in entry.pronunciationHints {
-                if contains(term: hint, in: text, lowered: lowered) {
-                    hits.insert(entry.id)
-                    break
-                }
+            for hint in entry.pronunciationHints where contains(term: hint, in: text, lowered: lowered) {
+                hits.insert(entry.id)
+                break
             }
         }
         return hits

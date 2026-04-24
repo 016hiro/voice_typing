@@ -103,7 +103,7 @@ public enum HallucinationFilter {
         "(music)",
         "(applause)",
         "[music]",
-        "[applause]",
+        "[applause]"
     ]
 
     private static let blacklistNormalized: Set<String> = {

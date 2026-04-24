@@ -75,7 +75,7 @@ enum ModelStore {
             let critical = [
                 base.appendingPathComponent("AudioEncoder.mlmodelc/weights/weight.bin"),
                 base.appendingPathComponent("TextDecoder.mlmodelc/weights/weight.bin"),
-                base.appendingPathComponent("MelSpectrogram.mlmodelc/weights/weight.bin"),
+                base.appendingPathComponent("MelSpectrogram.mlmodelc/weights/weight.bin")
             ]
             for url in critical {
                 guard fm.fileExists(atPath: url.path),
@@ -162,7 +162,7 @@ enum ModelStore {
                 if !fm.fileExists(atPath: weights.path) { return true }
                 if !fm.fileExists(atPath: vocab.path) { return true }
                 if let sz = fileSize(at: weights), sz < 1_000_000 { return true }
-                if let sz = fileSize(at: vocab),   sz < 100_000   { return true }
+                if let sz = fileSize(at: vocab), sz < 100_000 { return true }
                 return false
             }()
             guard needsRepair, fm.fileExists(atPath: base.path) else { return false }
@@ -238,12 +238,10 @@ enum ModelStore {
         guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else {
             return false
         }
-        for case let url as URL in enumerator {
-            if url.pathExtension == "safetensors" {
-                if let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
-                   let size = values.fileSize, size > 1_000_000 {
-                    return true
-                }
+        for case let url as URL in enumerator where url.pathExtension == "safetensors" {
+            if let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+               let size = values.fileSize, size > 1_000_000 {
+                return true
             }
         }
         return false

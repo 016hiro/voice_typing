@@ -145,7 +145,7 @@ final class SettingsWindowController {
             hostView.centerXAnchor.constraint(equalTo: container.centerXAnchor),
             hostView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             hostView.widthAnchor.constraint(equalToConstant: Panel.width),
-            hostView.heightAnchor.constraint(equalToConstant: Panel.height),
+            hostView.heightAnchor.constraint(equalToConstant: Panel.height)
         ])
 
         w.contentView = container
@@ -230,7 +230,7 @@ private struct SettingsView: View {
             panelShape
                 .fill(Color.black.opacity(0.001))
                 .shadow(color: .black.opacity(0.35), radius: 24, x: 0, y: 14)
-                .shadow(color: .black.opacity(0.25), radius: 6,  x: 0, y: 2)
+                .shadow(color: .black.opacity(0.25), radius: 6, x: 0, y: 2)
 
             panelContent
                 .frame(width: Panel.width, height: Panel.height)
@@ -249,7 +249,7 @@ private struct SettingsView: View {
                                 colors: [
                                     Color.white.opacity(0.45),
                                     Color.white.opacity(0.08),
-                                    Color.white.opacity(0.14),
+                                    Color.white.opacity(0.14)
                                 ],
                                 startPoint: .top, endPoint: .bottom
                             ),
@@ -311,7 +311,7 @@ private extension View {
                             colors: [
                                 Color.white.opacity(0.16),
                                 Color.white.opacity(0.05),
-                                Color.black.opacity(0.12),
+                                Color.black.opacity(0.12)
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -456,7 +456,7 @@ private struct TabLabelShadow: ViewModifier {
 /// Liquid Glass HIG: glass cannot sample other glass without
 /// GlassEffectContainer grouping).
 private struct SectionCard<Content: View>: View {
-    var title: String? = nil
+    var title: String?
     @ViewBuilder var content: () -> Content
 
     var body: some View {

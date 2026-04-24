@@ -418,7 +418,7 @@ public extension QwenASRRecognizer {
         vadBox: SharedVADBox,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) throws {
-        try transcribeLock.withLock { () throws -> Void in
+        try transcribeLock.withLock { () throws in
             guard let asr = self.model else {
                 throw NSError(domain: "VoiceTyping.ASR", code: 1,
                               userInfo: [NSLocalizedDescriptionKey: "Recognizer not prepared"])

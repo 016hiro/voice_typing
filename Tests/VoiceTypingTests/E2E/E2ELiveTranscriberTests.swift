@@ -50,7 +50,7 @@ final class E2ELiveTranscriberTests: XCTestCase {
             "librispeech_1272_128104_short",  // ~6 s en
             "fleurs_zh_med_7s_m_1548",        // ~7 s zh
             "librispeech_1988_147956_short",  // ~9 s en
-            "fleurs_zh_xlong_18s_m_1542",     // ~18 s zh — exercises 25 s force-split boundary
+            "fleurs_zh_xlong_18s_m_1542"     // ~18 s zh — exercises 25 s force-split boundary
         ]
         let names = (try FixtureLoader.allNames()).filter { candidates.contains($0) }
         guard !names.isEmpty else {

@@ -89,7 +89,7 @@ final class E2EVADTuningBenchmarkTests: XCTestCase {
             Preset(
                 label: "production ",
                 tuning: .production  // v0.5.0 shipping default (25 s force-split)
-            ),
+            )
         ]
 
         let rec = QwenASRRecognizer(backend: backend, cacheDir: ModelStore.directory(for: backend))

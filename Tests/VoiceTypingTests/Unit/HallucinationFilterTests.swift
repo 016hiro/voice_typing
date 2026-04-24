@@ -13,7 +13,7 @@ final class HallucinationFilterTests: XCTestCase {
             "好的",
             "嗯",
             "对",
-            "明镜与点点栏目",
+            "明镜与点点栏目"
         ]
         for c in cases {
             XCTAssertTrue(
@@ -32,7 +32,7 @@ final class HallucinationFilterTests: XCTestCase {
             "OK.",
             "Mhm.",
             "♪",
-            "(music)",
+            "(music)"
         ]
         for c in cases {
             XCTAssertTrue(
@@ -49,7 +49,7 @@ final class HallucinationFilterTests: XCTestCase {
             "Thanks for the help with the migration.",
             "Yeah, that's exactly what I meant.",
             "好的，我们就这么定了",
-            "嗯，这个方案可以试试",
+            "嗯，这个方案可以试试"
         ]
         for c in cases {
             XCTAssertFalse(
@@ -116,7 +116,7 @@ final class HallucinationFilterTests: XCTestCase {
         let cases = [
             "我用 Rust 写了一个小工具",
             "Python 这个生态很成熟",
-            "刚才那段是 VAD 切错了",
+            "刚才那段是 VAD 切错了"
         ]
         for c in cases {
             XCTAssertFalse(
