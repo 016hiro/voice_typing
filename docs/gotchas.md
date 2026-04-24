@@ -12,6 +12,10 @@
 
 - **NSVisualEffectView 不吃 `cornerRadius + masksToBounds`**：blur 材质渲染绕开 layer cornerRadius。规避：用 `effect.maskImage` + 9-slice 圆角 capsule 图（Apple 官方推荐路径）。(v0.1.0)
 
+- **SwiftPM `.executableTarget` 不给嵌入 framework 加 rpath**：`swift build -c release` 产出的可执行文件 `LC_RPATH` 只有 `/usr/lib/swift`、`@loader_path`、Xcode toolchain 三条——**没有** `@executable_path/../Frameworks`。把第三方 framework（如 Sparkle）放进 `Contents/Frameworks/` 后，dyld 启动时按 rpath 找不到，应用 SIGABRT crash 在启动前（"Library not loaded: @rpath/X.framework/..."）。规避：`make build` 跑 `install_name_tool -add_rpath "@executable_path/../Frameworks" $(BIN)`，幂等（先 `otool -l` grep 检查）。(v0.6.0)
+
+- **Hardened runtime + 自签名证书 = library validation 拒所有 framework**：`codesign --options runtime` 启用后，dyld 要求加载的 framework 与 host 共享 Apple Team ID；自签名 / ad-hoc 签名的 Team ID 都是空 → 验证策略 fall back 到更严，连同 cert 签的自家 framework 也被拒。错误形式："code signature in '...' (...) "。规避：app entitlements 加 `com.apple.security.cs.disable-library-validation`。等真上 Apple Developer ID + notarize 时这条可以删（Team ID 验证天然通过）。(v0.6.0)
+
 ## Swift / SwiftUI / Concurrency
 
 - **SourceKit 索引经常假阳性报 "Cannot find type X in scope"**：编辑后保存触发 indexing race，错误能持续几秒到几十秒。规避：跑 `swift build`，build 干净就忽略 IDE 红线。本项目尤其多发于 `DebugCapture` / `LiveTranscriber` 这类新增类型。

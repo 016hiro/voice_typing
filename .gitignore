@@ -9,6 +9,7 @@ build/
 # compiled AppIcon.icns is the one that ships.
 Resources/AppIcon.iconset/
 __pycache__/
+docs/devlog/analysis/
 # v0.6.0 Sparkle: never commit private update-signing keys. The Keychain
 # is the authoritative store; `generate_keys -x` produces export files here
 # only for password-manager backup.
