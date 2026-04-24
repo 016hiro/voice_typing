@@ -8,7 +8,6 @@ final class CustomDictionaryTests: XCTestCase {
     private var dict: CustomDictionary!
 
     override func setUp() async throws {
-        try await super.setUp()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceTypingDictTests-\(UUID().uuidString)",
                                     isDirectory: true)
@@ -21,7 +20,6 @@ final class CustomDictionaryTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempURL.deletingLastPathComponent())
         tempURL = nil
         dict = nil
-        try await super.tearDown()
     }
 
     // MARK: - Basic CRUD

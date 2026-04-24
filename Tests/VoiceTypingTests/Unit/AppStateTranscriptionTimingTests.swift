@@ -19,7 +19,6 @@ final class AppStateTranscriptionTimingTests: XCTestCase {
     private var savedLive: Any?
 
     override func setUp() async throws {
-        try await super.setUp()
         let ud = UserDefaults.standard
         savedStreaming = ud.object(forKey: streamingKey)
         savedLive = ud.object(forKey: liveKey)
@@ -32,7 +31,6 @@ final class AppStateTranscriptionTimingTests: XCTestCase {
         restore(key: streamingKey, value: savedStreaming)
         restore(key: liveKey, value: savedLive)
         _ = ud.synchronize()
-        try await super.tearDown()
     }
 
     private func restore(key: String, value: Any?) {
