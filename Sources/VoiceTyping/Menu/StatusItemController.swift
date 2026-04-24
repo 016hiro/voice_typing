@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Sparkle
 
 @MainActor
 final class StatusItemController: NSObject {
@@ -8,6 +9,10 @@ final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private var cancellables: Set<AnyCancellable> = []
+    /// v0.6.0: target of the "Check for Updates…" menu item. Owned by
+    /// AppDelegate (must outlive every menu rebuild) so we just hold a
+    /// reference here.
+    private let updaterController: SPUStandardUpdaterController
 
     private var settingsWindowController: SettingsWindowController?
 
@@ -20,8 +25,9 @@ final class StatusItemController: NSObject {
     var onGrantMicrophone: (() -> Void)?
     var onQuit: (() -> Void)?
 
-    init(state: AppState) {
+    init(state: AppState, updaterController: SPUStandardUpdaterController) {
         self.state = state
+        self.updaterController = updaterController
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -192,6 +198,17 @@ final class StatusItemController: NSObject {
                                   keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+
+        // v0.6.0: Sparkle wires its own enabled-state on this item — it stays
+        // disabled while a check is in flight, and gets re-enabled when the
+        // updater is idle. `target` is the SPUStandardUpdaterController itself.
+        let checkUpdates = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        checkUpdates.target = updaterController
+        menu.addItem(checkUpdates)
 
         menu.addItem(.separator())
 

@@ -11,7 +11,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/argmaxinc/WhisperKit", from: "0.9.0"),
-        .package(url: "https://github.com/soniqo/speech-swift", from: "0.0.9")
+        .package(url: "https://github.com/soniqo/speech-swift", from: "0.0.9"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
         .executableTarget(
@@ -20,7 +21,8 @@ let package = Package(
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Qwen3ASR", package: "speech-swift"),
                 .product(name: "AudioCommon", package: "speech-swift"),
-                .product(name: "SpeechVAD", package: "speech-swift")
+                .product(name: "SpeechVAD", package: "speech-swift"),
+                .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/VoiceTyping",
             linkerSettings: [

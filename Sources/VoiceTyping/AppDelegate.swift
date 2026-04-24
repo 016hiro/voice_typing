@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Sparkle
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -10,13 +11,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let refiner = LLMRefiner()
     let fnMonitor = FnHotkeyMonitor()
 
+    // v0.6.0: Sparkle 2 auto-update. `startingUpdater: true` triggers the
+    // first background check shortly after launch and then runs Sparkle's
+    // built-in 24h scheduler. The controller exposes `checkForUpdates(_:)`
+    // as the Cocoa target/action for the menu's "Check for Updates…" item.
+    // Configuration (feed URL, EdDSA pubkey, automatic checks) lives in
+    // Info.plist (SUFeedURL / SUPublicEDKey / SUEnableAutomaticChecks).
+    let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
+
     // Internal (not private) so AppDelegate+Live.swift can read them when
     // setting up the live transcriber at Fn↓.
     var recognizer: SpeechRecognizer!
     var activeBackend: ASRBackend = .default
 
     lazy var statusController: StatusItemController = {
-        let c = StatusItemController(state: state)
+        let c = StatusItemController(state: state, updaterController: updaterController)
         c.onLanguageSelected = { [weak self] lang in
             self?.state.language = lang
         }

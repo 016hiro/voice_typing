@@ -17,9 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.5.2</string>
+    <string>0.6.0</string>
     <key>CFBundleVersion</key>
-    <string>13</string>
+    <string>14</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>LSUIElement</key>
@@ -32,5 +32,11 @@
     <string>VoiceTyping transcribes speech locally.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>SUFeedURL</key>
+    <string>https://016hiro.github.io/voice_typing/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>a1dQ3yzVb6aDi4N6cW8DpCUb1asgSi1IbEUogkTfEfs=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
 </dict>
 </plist>

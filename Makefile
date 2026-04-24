@@ -4,6 +4,10 @@ BIN     := .build/release/$(APP)
 PAYLOAD := build/$(BUNDLE)
 MLX_METALLIB_SCRIPT := .build/checkouts/speech-swift/scripts/build_mlx_metallib.sh
 MLX_METALLIB := .build/release/mlx.metallib
+# v0.6.0: Sparkle.framework — SwiftPM produces it but doesn't auto-embed
+# in the app bundle the way Xcode does. We copy it into Contents/Frameworks
+# (where @rpath/Sparkle.framework looks at runtime) before codesign.
+SPARKLE_FRAMEWORK := .build/release/Sparkle.framework
 
 # Stable codesigning identity — created by `make setup-cert`. If present,
 # `make build` signs with it (stable cdhash → TCC grants persist across
@@ -15,7 +19,16 @@ SIGNING_IDENTITY ?= VoiceTyping Dev
 # the stable cdhash, not the trust chain.
 HAVE_SIGNING_IDENTITY := $(shell security find-identity -p codesigning 2>/dev/null | grep -q "\"$(SIGNING_IDENTITY)\"" && echo yes || echo no)
 
-.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e benchmark-vad benchmark-speed
+.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e benchmark-vad benchmark-speed dmg release setup-sparkle-tools
+
+# v0.6.0 release infrastructure
+SPARKLE_VERSION  := 2.9.1
+SPARKLE_TOOLS    := .build/sparkle-tools
+SIGN_UPDATE      := $(SPARKLE_TOOLS)/bin/sign_update
+GH_PAGES         := build/gh-pages
+APPCAST          := $(GH_PAGES)/appcast.xml
+GITHUB_REPO      := 016hiro/voice_typing
+DMG_URL_BASE     := https://github.com/$(GITHUB_REPO)/releases/download
 
 # Test bundle path produced by `swift build --build-tests`. E2E tests need
 # `mlx.metallib` copied next to this binary so `Bundle.main.executableURL`'s
@@ -26,10 +39,21 @@ FIXTURE_ROOT := $(shell pwd)/Tests/Fixtures
 build: metallib icons
 	swift build -c release --arch arm64
 	rm -rf $(PAYLOAD)
-	mkdir -p $(PAYLOAD)/Contents/MacOS $(PAYLOAD)/Contents/Resources
+	mkdir -p $(PAYLOAD)/Contents/MacOS $(PAYLOAD)/Contents/Resources $(PAYLOAD)/Contents/Frameworks
 	cp $(BIN) $(PAYLOAD)/Contents/MacOS/$(APP)
 	cp Resources/Info.plist $(PAYLOAD)/Contents/Info.plist
 	cp Resources/AppIcon.icns $(PAYLOAD)/Contents/Resources/AppIcon.icns
+	# v0.6.0: embed Sparkle.framework (auto-update) — the binary links
+	# @rpath/Sparkle.framework/Versions/B/Sparkle, so the framework must
+	# live in Contents/Frameworks before launch. ditto preserves the
+	# Versions/B symlink chain and the embedded XPC services / Updater.app.
+	@if [ -d $(SPARKLE_FRAMEWORK) ]; then \
+	  ditto $(SPARKLE_FRAMEWORK) $(PAYLOAD)/Contents/Frameworks/Sparkle.framework; \
+	  echo "  embedded Sparkle.framework → $(PAYLOAD)/Contents/Frameworks/"; \
+	else \
+	  echo "  [error] $(SPARKLE_FRAMEWORK) not found — Sparkle dependency missing or build failed."; \
+	  exit 1; \
+	fi
 	# Copy SwiftPM-produced resource bundles (WhisperKit shaders, HuggingFace tokenizer bundles, etc.)
 	@for b in .build/release/*.bundle; do \
 	  if [ -e "$$b" ]; then cp -R "$$b" $(PAYLOAD)/Contents/Resources/; fi; \
@@ -147,6 +171,59 @@ test-e2e: metallib
 	VT_FIXTURE_ROOT=$(FIXTURE_ROOT) \
 	VT_MLX_TEST_READY=1 \
 	swift test --arch arm64
+
+# v0.6.0: one-time download of Sparkle's CLI tools (sign_update, generate_keys).
+# They aren't in the SwiftPM checkout — Sparkle ships them as a separate release
+# tarball. We cache them under .build/ (gitignored) so CI/dev can reproduce.
+setup-sparkle-tools:
+	@if [ -x $(SIGN_UPDATE) ]; then \
+	  echo "  sparkle tools already at $(SPARKLE_TOOLS)/bin/"; \
+	else \
+	  echo "  downloading Sparkle $(SPARKLE_VERSION) tools..."; \
+	  mkdir -p $(SPARKLE_TOOLS); \
+	  curl -sSL -o $(SPARKLE_TOOLS)/Sparkle.tar.xz \
+	    https://github.com/sparkle-project/Sparkle/releases/download/$(SPARKLE_VERSION)/Sparkle-$(SPARKLE_VERSION).tar.xz; \
+	  tar -xf $(SPARKLE_TOOLS)/Sparkle.tar.xz -C $(SPARKLE_TOOLS); \
+	  echo "  installed to $(SPARKLE_TOOLS)/bin/"; \
+	fi
+
+# v0.6.0: Package the freshly-built .app into a distribution DMG.
+# Usage:  make dmg VERSION=0.6.0
+dmg: build
+	@test -n "$(VERSION)" || { echo "error: VERSION not set. Usage: make dmg VERSION=0.6.0" >&2; exit 1; }
+	bash Scripts/release/make_dmg.sh $(VERSION)
+
+# v0.6.0: Full release flow — build + DMG + EdDSA sign + appcast update.
+# Prerequisites (one-time):
+#   1. `make setup-sparkle-tools`
+#   2. EdDSA keypair in Keychain: `$(SPARKLE_TOOLS)/bin/generate_keys`
+#      (then paste the printed public key into Resources/Info.plist SUPublicEDKey)
+#   3. gh-pages worktree: `git worktree add $(GH_PAGES) gh-pages`
+#
+# Usage:  make release VERSION=0.6.0 BUILD=14
+# Leaves you with local changes to push:
+#   - build/VoiceTyping-<VERSION>.dmg (ready to upload to GitHub Release)
+#   - $(APPCAST) updated (ready to commit + push in the gh-pages worktree)
+release: dmg setup-sparkle-tools
+	@test -n "$(VERSION)" || { echo "error: VERSION not set. Usage: make release VERSION=0.6.0 BUILD=14" >&2; exit 1; }
+	@test -n "$(BUILD)"   || { echo "error: BUILD not set.   Usage: make release VERSION=0.6.0 BUILD=14" >&2; exit 1; }
+	@test -d $(GH_PAGES)  || { echo "error: $(GH_PAGES) not found. Run: git worktree add $(GH_PAGES) gh-pages" >&2; exit 1; }
+	@DMG="build/VoiceTyping-$(VERSION).dmg"; \
+	 ED_SIG="$$($(SIGN_UPDATE) -p $$DMG)" || { echo "error: sign_update failed (is the EdDSA private key in your Keychain? run $(SPARKLE_TOOLS)/bin/generate_keys)" >&2; exit 1; }; \
+	 echo "  signed DMG → ed_signature=$$ED_SIG"; \
+	 python3 Scripts/release/update_appcast.py \
+	   --appcast $(APPCAST) \
+	   --version $(VERSION) \
+	   --build $(BUILD) \
+	   --min-system 15.0 \
+	   --dmg $$DMG \
+	   --dmg-url $(DMG_URL_BASE)/v$(VERSION)/VoiceTyping-$(VERSION).dmg \
+	   --ed-signature "$$ED_SIG"; \
+	 echo ""; \
+	 echo "  ── Next steps ─────────────────────────────────────────────"; \
+	 echo "  1. gh release create v$(VERSION) $$DMG --title 'v$(VERSION)' --notes-file docs/devlog/v$(VERSION).md"; \
+	 echo "  2. (cd $(GH_PAGES) && git add appcast.xml && git commit -m 'appcast: v$(VERSION)' && git push)"
+	 echo "  3. On a clean Mac: download the DMG, install, verify Sparkle detects the next release"
 
 # v0.4.5 prep: sweep candidate VAD tuning presets across every fixture and
 # print a side-by-side recap. Same staging as `test-e2e` but runs ONLY the

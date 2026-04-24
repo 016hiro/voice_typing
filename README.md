@@ -1,6 +1,10 @@
 # VoiceTyping
 
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20NC%201.0.0-blue.svg)](LICENSE)
+
 A macOS menu-bar voice input app. Hold **Fn** to dictate, release to paste the transcribed text into the focused input field.
+
+> **License**: source-available under [PolyForm Noncommercial 1.0.0](LICENSE) — personal, educational, research, and nonprofit use OK; commercial use prohibited.
 
 - Default language: Simplified Chinese (zh-CN). Also supports English, Traditional Chinese, Japanese, Korean.
 - Swappable local ASR backend (select from the menu):
@@ -53,6 +57,24 @@ If you skip `make setup-metal`, the app still boots but defaults to Whisper larg
 
 The ASR backend is behind a `SpeechRecognizer` protocol with per-backend subdirectories under `models/`. Current implementations are `WhisperKitRecognizer` and `QwenASRRecognizer` (wrapping `soniqo/speech-swift`). Adding a new backend means implementing the protocol and adding a case to `ASRBackend` — no other wiring changes.
 
+## Install (v0.6.0+, prebuilt DMG)
+
+> Available starting v0.6.0. Earlier versions: build from source per the steps above.
+
+1. Download `VoiceTyping-X.Y.Z.dmg` from [Releases](https://github.com/016hiro/voice_typing/releases/latest).
+2. Double-click the DMG → drag `VoiceTyping.app` to **Applications**.
+3. **First launch**: macOS Gatekeeper will block (the app is not Apple-notarized — see [`LICENSE`](LICENSE) for why this is intentional for now).
+   - **Right-click** `VoiceTyping.app` in Applications → **Open** → confirm. macOS remembers the choice; subsequent launches are direct.
+   - On macOS 15+ if right-click → Open is unavailable: **System Settings → Privacy & Security → "Open Anyway"**.
+4. Grant **Microphone** and **Accessibility** when prompted.
+
+### Updates
+
+Once v0.6.0+ is installed, updates arrive automatically via Sparkle:
+- App checks once on launch and once per day in the background.
+- Manual check: status-bar menu → **Check for Updates…**.
+- Update artifacts are EdDSA-signed; the app refuses to apply tampered updates.
+
 ## Documentation
 
 详细文档在 [`docs/`](docs/) 目录下：
@@ -60,3 +82,4 @@ The ASR backend is behind a `SpeechRecognizer` protocol with per-backend subdire
 - [`docs/architecture.md`](docs/architecture.md) — 技术架构、模块设计、信息流
 - [`docs/devlog/`](docs/devlog/) — 每个版本实现的功能、遇到的问题、修复方案
 - [`docs/todo/`](docs/todo/) — 每个版本的 todo list 和 backlog
+- [`docs/release-process.md`](docs/release-process.md) — 维护者发版流程（v0.6.0+）
