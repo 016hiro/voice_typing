@@ -202,6 +202,12 @@ final class DebugCaptureWriter: @unchecked Sendable {
 
     // MARK: - File helpers
 
+    /// Test support: block until all writer work enqueued before this call has
+    /// completed. This is intentionally not used by production code.
+    func waitUntilIdleForTesting() {
+        queue.sync {}
+    }
+
     /// Writes meta.json with the current `meta` value. Called from the serial
     /// queue; safe to invoke multiple times (init writes partial; finalize/abort
     /// overwrite atomically with final fields populated).

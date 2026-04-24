@@ -104,18 +104,9 @@ final class DebugCaptureWriterTests: XCTestCase {
         let writer = makeWriter(sessionId: "frac0002")
         writer.appendSegment(.init(timestamp: Date(), startSec: 0, endSec: 0.5,
                                     rawText: "x", filter: .kept, transcribeMs: 10))
-        // Drain by issuing a synchronous block on the writer's queue (cleanest
-        // way to await async appends without sleep).
-        let exp = expectation(description: "segment flushed")
         writer.appendInjection(.init(timestamp: Date(), chars: 1, textPreview: "x",
                                       targetBundleID: nil, actualBundleID: nil,
                                       status: .ok, elapsedMs: 1))
-        DispatchQueue.global().async {
-            // Force a wait by chaining one more append + a quick poll.
-            Thread.sleep(forTimeInterval: 0.05)
-            exp.fulfill()
-        }
-        wait(for: [exp], timeout: 2.0)
         drain(writer)
 
         let segPath = writer.folder.appendingPathComponent("segments.jsonl")
@@ -148,38 +139,10 @@ final class DebugCaptureWriterTests: XCTestCase {
     }
 
     /// Block until the writer's serial queue has drained all enqueued work.
-    /// All public writer methods enqueue on the same internal queue, so a
-    /// `sync` on that queue via a label-matched flush guarantees ordering.
-    /// The writer's queue isn't exposed; we use a sync `DispatchWorkItem` on
-    /// the same QoS by calling `finalize`/`abort`-like quiescence: enqueue a
-    /// no-op via the public API and wait on it via expectation.
+    /// This must not rely on marker appends: finalize/abort intentionally
+    /// drops subsequent appends, which made the old file-polling helper flaky.
     private func drain(_ writer: DebugCaptureWriter) {
-        // Enqueue a marker via appendSegment — runs after every prior task on
-        // the writer's serial queue. Use an expectation to await the file
-        // being touched.
-        let marker = "__drain_marker_\(UUID().uuidString)__"
-        writer.appendSegment(.init(timestamp: Date(), startSec: -1, endSec: -1,
-                                    rawText: marker, filter: .kept, transcribeMs: 0))
-        let exp = expectation(description: "drain")
-        DispatchQueue.global().async { [folder = writer.folder] in
-            // Poll up to 1s for the marker to land in segments.jsonl.
-            let segURL = folder.appendingPathComponent("segments.jsonl")
-            for _ in 0..<100 {
-                if let raw = try? String(contentsOf: segURL, encoding: .utf8), raw.contains(marker) {
-                    exp.fulfill()
-                    return
-                }
-                Thread.sleep(forTimeInterval: 0.01)
-            }
-            // Drain may complete before any segment is written (e.g. after
-            // finalize). Fall through and fulfill so callers don't hang.
-            exp.fulfill()
-        }
-        // Timeout headroom for slow CI disks: the 100×10ms polling loop is ~1s
-        // nominal locally but file IO per iteration can push total wall time
-        // past 2s on the macos-15 runner. 5s leaves ample slack while still
-        // surfacing real hangs.
-        wait(for: [exp], timeout: 5.0)
+        writer.waitUntilIdleForTesting()
     }
 
     private func loadMeta(at url: URL) throws -> [String: Any] {
