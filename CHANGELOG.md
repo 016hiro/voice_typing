@@ -4,8 +4,15 @@
 
 ## Unreleased
 
+_（下个版本的用户可见变更在此累积）_
+
+## v0.6.0 — 2026-04-24
+
 ### Added
-- **Hands-free 模式**（Settings → Models, EXPERIMENTAL）：开启后短按 Fn（< 200ms）= 录音继续，1.5 秒静默自动停。再按 Fn = 取消丢弃。长按 Fn 行为不变。仅 Qwen 后端可用，所有 3 种 transcription timing 都支持。默认关闭 (dogfood opt-in)
+- **DMG 安装包**：从 [Releases](https://github.com/016hiro/voice_typing/releases) 下载 `VoiceTyping-0.6.0.dmg`，双击 → 拖到 Applications → 首次右键 → 打开（绕过 Gatekeeper 一次）
+- **Sparkle 自更新**：装好之后所有版本无感升级。启动时自动检查 + 每 24h 后台检查 + 菜单 "Check for Updates…" 手动触发。EdDSA 签名验证 update 完整性
+- **PolyForm Noncommercial 1.0.0 LICENSE**：source-available，个人 / 教育 / 研究 / 非营利使用 OK；禁商用
+- **Hands-free 模式**（Settings → Models, EXPERIMENTAL，原 v0.5.3 工作）：开启后短按 Fn（< 200ms）= 录音继续，1.5 秒静默自动停。再按 Fn = 取消丢弃。长按 Fn 行为不变。仅 Qwen 后端可用，所有 3 种 transcription timing 都支持。默认关闭 (dogfood opt-in)
 - 胶囊 hands-free 视觉：morse 染橙 + "HF" 角标 + 进入时显示 "TAP FN TO CANCEL" 3 秒
 
 ### Changed
@@ -14,6 +21,11 @@
 ### Fixed
 - **DebugCaptureWriter `meta.json` 缺失**：v0.5.2 dogfood 12% 完整率 → 现在 begin() 立刻写 partial meta，crash/force-quit 也能保留元数据
 - **DebugCaptureWriter timestamp 秒精度**：`live_drain.py` 因为 `endedAt` 和 last inject 经常落同一秒报 0ms drain 全失效，现在 ISO8601 加 fractional seconds
+
+### Notes
+- v0.5.3 的全部代码工作（hands-free + writer 修补 + RecordingPolicy）从未发过 binary release，全部 fold 进 v0.6.0 首发
+- 没有 Apple Developer 账号 → 没有 notarization → 首次启动 Gatekeeper 会拦，需要右键 → 打开。详见 [README "Install" 段](README.md#install-v060-prebuilt-dmg)
+- 详细技术 + 决策见 [`docs/devlog/v0.6.0.md`](docs/devlog/v0.6.0.md)
 
 ## v0.5.2 — 2026-04-23
 
