@@ -1,11 +1,17 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0"
-     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
-     xmlns:dc="http://purl.org/dc/elements/1.1/">
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <title>VoiceTyping</title>
     <link>https://016hiro.github.io/voice_typing/appcast.xml</link>
     <description>Updates for VoiceTyping</description>
     <language>en</language>
+    <item>
+      <title>Version 0.6.0</title>
+      <pubDate>Fri, 24 Apr 2026 16:32:19 GMT</pubDate>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/016hiro/voice_typing/releases/download/v0.6.0/VoiceTyping-0.6.0.dmg" sparkle:edSignature="ogNzT6xZsqeBBsWJhL/qjFoTZM2z/mvL+oXp5vV6hVt92MwdT0bDchswe2GgZ4Hvag9mXZsr6gnxjMyJbNrcDg==" length="42394932" type="application/octet-stream" />
+    </item>
   </channel>
 </rss>
