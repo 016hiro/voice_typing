@@ -31,14 +31,12 @@ import Foundation
 final class E2EASRComparisonTests: XCTestCase {
 
     override func setUp() async throws {
-        try await super.setUp()
         continueAfterFailure = true
         MLXSupport.overrideAvailable = ProcessInfo.processInfo.environment["VT_MLX_TEST_READY"] == "1"
     }
 
     override func tearDown() async throws {
         MLXSupport.overrideAvailable = nil
-        try await super.tearDown()
     }
 
     func testE2E_Qwen_BatchVsStreaming_AllFixtures() async throws {

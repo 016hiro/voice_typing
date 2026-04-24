@@ -223,7 +223,11 @@ dmg: build setup-dmg-tools
 # Leaves you with local changes to push:
 #   - build/VoiceTyping-<VERSION>.dmg (ready to upload to GitHub Release)
 #   - $(APPCAST) updated (ready to commit + push in the gh-pages worktree)
-release: dmg setup-sparkle-tools
+#
+# `test` is a hard prerequisite (mirrors CI's `swift test --skip E2E`). Without
+# it, you can ship a DMG while CI is red on main — exactly how v0.5.0..v0.5.3
+# went out with broken Swift 6 strict-concurrency in the test target undetected.
+release: test dmg setup-sparkle-tools
 	@test -n "$(VERSION)" || { echo "error: VERSION not set. Usage: make release VERSION=0.6.0 BUILD=14" >&2; exit 1; }
 	@test -n "$(BUILD)"   || { echo "error: BUILD not set.   Usage: make release VERSION=0.6.0 BUILD=14" >&2; exit 1; }
 	@test -d $(GH_PAGES)  || { echo "error: $(GH_PAGES) not found. Run: git worktree add $(GH_PAGES) gh-pages" >&2; exit 1; }
