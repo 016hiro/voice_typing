@@ -19,7 +19,7 @@ SIGNING_IDENTITY ?= VoiceTyping Dev
 # the stable cdhash, not the trust chain.
 HAVE_SIGNING_IDENTITY := $(shell security find-identity -p codesigning 2>/dev/null | grep -q "\"$(SIGNING_IDENTITY)\"" && echo yes || echo no)
 
-.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e benchmark-vad benchmark-speed dmg release setup-sparkle-tools
+.PHONY: build run install clean debug metallib setup-metal setup-cert icons reset-perms test test-e2e benchmark-vad benchmark-speed dmg release setup-sparkle-tools setup-dmg-tools
 
 # v0.6.0 release infrastructure
 SPARKLE_VERSION  := 2.9.1
@@ -195,9 +195,20 @@ setup-sparkle-tools:
 	  echo "  installed to $(SPARKLE_TOOLS)/bin/"; \
 	fi
 
+# v0.6.0: one-time install of create-dmg via Homebrew. Required by `make dmg`
+# for the custom volume icon, window layout, and icon positioning. Without
+# it `make dmg` errors with a friendly hint.
+setup-dmg-tools:
+	@if command -v create-dmg >/dev/null 2>&1; then \
+	  echo "  create-dmg already installed at $$(command -v create-dmg)"; \
+	else \
+	  echo "  installing create-dmg via Homebrew..."; \
+	  brew install create-dmg; \
+	fi
+
 # v0.6.0: Package the freshly-built .app into a distribution DMG.
 # Usage:  make dmg VERSION=0.6.0
-dmg: build
+dmg: build setup-dmg-tools
 	@test -n "$(VERSION)" || { echo "error: VERSION not set. Usage: make dmg VERSION=0.6.0" >&2; exit 1; }
 	bash Scripts/release/make_dmg.sh $(VERSION)
 

@@ -32,6 +32,14 @@ make setup-sparkle-tools
 
 Downloads + extracts `sign_update`, `generate_keys`, `generate_appcast` into `.build/sparkle-tools/bin/` (gitignored).
 
+### 1b. DMG layout tool
+
+```bash
+make setup-dmg-tools   # equivalent to: brew install create-dmg
+```
+
+`create-dmg` wraps hdiutil + osascript so the mounted DMG opens with a sized window, icon-positioned layout, and custom volume icon. First run from your **Terminal** (not a CI / non-UI shell) — macOS will prompt "Terminal wants to control Finder", click **OK** once. The grant attaches to whatever app spawned the build (Terminal / iTerm / etc.); CI hosts can't grant it interactively, so don't run `make release` headless until we add a fallback path.
+
 ### 2. EdDSA signing keypair
 
 ```bash
