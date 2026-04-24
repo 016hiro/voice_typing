@@ -43,6 +43,14 @@ build: metallib icons
 	cp $(BIN) $(PAYLOAD)/Contents/MacOS/$(APP)
 	cp Resources/Info.plist $(PAYLOAD)/Contents/Info.plist
 	cp Resources/AppIcon.icns $(PAYLOAD)/Contents/Resources/AppIcon.icns
+	# v0.6.0: SwiftPM doesn't add @executable_path/../Frameworks to LC_RPATH
+	# for executable targets, so dyld can't find embedded frameworks at launch
+	# (e.g. Sparkle.framework crashes the app with "Library not loaded:
+	# @rpath/Sparkle.framework/..."). Inject the rpath post-build, idempotent.
+	@if ! otool -l $(PAYLOAD)/Contents/MacOS/$(APP) | grep -q "@executable_path/../Frameworks"; then \
+	  install_name_tool -add_rpath "@executable_path/../Frameworks" $(PAYLOAD)/Contents/MacOS/$(APP); \
+	  echo "  injected rpath @executable_path/../Frameworks"; \
+	fi
 	# v0.6.0: embed Sparkle.framework (auto-update) — the binary links
 	# @rpath/Sparkle.framework/Versions/B/Sparkle, so the framework must
 	# live in Contents/Frameworks before launch. ditto preserves the

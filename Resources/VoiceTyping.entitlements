@@ -4,5 +4,13 @@
 <dict>
     <key>com.apple.security.device.audio-input</key>
     <true/>
+    <!-- v0.6.0: Sparkle.framework is signed with our self-signed cert (no Apple
+         Team ID). With hardened runtime, dyld's library validation rejects
+         frameworks that don't share the host's Team ID. Disabling this lets
+         the app load embedded frameworks signed by any cert (including
+         self-signed). When we eventually add a Developer ID and notarize, we
+         can drop this — Team ID-based validation will pass naturally. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
 </dict>
 </plist>
