@@ -103,6 +103,17 @@ build: metallib icons
 	done
 	@codesign --force --sign - $(PAYLOAD)/Contents/Frameworks/Sparkle.framework
 	@echo "  ad-hoc signed Sparkle helpers (Autoupdate / Updater.app / Downloader.xpc / Installer.xpc)"
+	# Without --deep, the host codesign won't auto-sign other nested code-bearing
+	# items either (mlx.metallib, SwiftPM resource bundles). Codesign requires
+	# every nested binary be signed before the host signature can be sealed,
+	# so ad-hoc them here. Adding more items? Append to the list below.
+	@codesign --force --sign - $(PAYLOAD)/Contents/MacOS/mlx.metallib
+	@for bundle in $(PAYLOAD)/Contents/Resources/*.bundle; do \
+	    if [ -e "$$bundle" ]; then \
+	        codesign --force --sign - "$$bundle" || exit 1; \
+	    fi; \
+	done
+	@echo "  ad-hoc signed nested code (mlx.metallib + SwiftPM .bundle resources)"
 ifeq ($(HAVE_SIGNING_IDENTITY),yes)
 	codesign --force --sign "$(SIGNING_IDENTITY)" \
 	  --entitlements Resources/VoiceTyping.entitlements \
