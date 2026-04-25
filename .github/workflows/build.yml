@@ -12,20 +12,22 @@ concurrency:
 
 jobs:
   swift-build:
-    # macos-26-arm64: Xcode 26.2 / Swift 6.3 default — picked to match the
-    # typical dev box. Earlier we ran on macos-15 (Xcode 16 / Swift 6.1.2)
-    # which still rejected the `@MainActor XCTestCase + try await super.setUp`
-    # pattern as a Swift 6 strict-concurrency false positive; Swift 6.3 has
-    # since fixed it. Local-vs-CI toolchain drift was letting our Stop hook
-    # gate (which runs against local Swift) green-light pushes that CI
-    # rejected — see commits 94a256a, 49cf4f4, 3e32d40 for the cleanup.
+    # macos-15 (arm64) ships Xcode 16 / Swift 6.1.2. Tried macos-26-arm64 in
+    # 6cda857 to match local Swift 6.3.1 and close the toolchain gap, but the
+    # macos-26 runner pool was still capacity-starved — jobs sat queued for
+    # 10+ hours. Reverted. Living with the toolchain gap: when local Swift is
+    # ahead of CI, our Stop hook can green-light a push that CI then rejects
+    # (rare; first incident in this project's history). Acceptable risk; fix
+    # by aligning the offending code to CI's stricter check when it bites.
+    # Future option if this becomes painful: install Xcode 16.4 alongside
+    # locally and pin the hook to it via DEVELOPER_DIR.
     #
     # Debug build only: we don't install Metal Toolchain in CI, and we don't
     # compile the MLX metallib here. Goal is a compile smoke test — catch
     # obvious breakage (missing imports, syntax errors, Swift 6 concurrency
     # regressions) before landing on main. Actual release artifacts are
     # built locally via `make build`.
-    runs-on: macos-26-arm64
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -43,13 +45,13 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             .build/checkouts
             .build/repositories
-          # Cache key includes the runner image tag — when we bumped from
-          # macos-15 to macos-26 the SwiftPM artifact format changed enough
-          # that restoring the old cache caused link errors. Always include
-          # the runner-image identifier in the key.
-          key: spm-macos-26-${{ hashFiles('Package.resolved') }}
+          # Include the runner image tag in the key — the macos-15 → macos-26
+          # bump-and-revert showed SwiftPM artifacts aren't portable across
+          # toolchain versions. Restoring a stale cross-toolchain cache produces
+          # link errors that look like real failures.
+          key: spm-macos-15-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            spm-macos-26-
+            spm-macos-15-
 
       - name: swift build -c debug
         run: swift build -c debug --arch arm64
