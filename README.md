@@ -81,6 +81,18 @@ Once v0.6.0+ is installed, updates arrive automatically via Sparkle:
 - **First launch** prompts you to download the default model (Qwen3-ASR 1.7B, ~1.4 GB). Pick "Later" to skip and choose a different model from **Settings → Manage Models**.
 - **Download source** is auto-selected per launch: prefers HuggingFace, falls back to `hf-mirror.com` if the official endpoint is slow / unreachable. Zero configuration, no token, no account.
 
+### Push-to-talk hotkey (v0.6.2+)
+
+Default is **Fn**. To pick a different key, open **Settings → Hotkey** and choose from:
+
+- **Fn** (default) — disables the macOS Fn shortcut (emoji picker / dictation).
+- **Right Option** / **Right Command** — left side keeps its normal behaviour.
+- **F13** / **F14** — only on keyboards that have these keys.
+
+The indicator dot at the top of the panel turns green while the selected key is held — use it to confirm your keyboard actually sends the expected keycode. If your pick doesn't light the dot, click **Reset to Fn (default)**.
+
+> Note: pressing your selected hotkey while Settings is open will also start a recording (the monitor doesn't know the difference). Just release.
+
 ## Documentation
 
 详细文档在 [`docs/`](docs/) 目录下：

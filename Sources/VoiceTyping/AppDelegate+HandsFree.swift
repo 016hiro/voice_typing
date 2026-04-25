@@ -29,7 +29,7 @@ extension AppDelegate {
 
     // MARK: - Tap-vs-hold decision
 
-    /// Called from `handleFn` on Fn↑. All conditions must hold for hands-free
+    /// Called from `handleHotkey` on PTT release. All conditions must hold for hands-free
     /// to take over; any failure falls through to the default `stopRecording`
     /// path so the user gets the existing hold-mode behaviour.
     func shouldEnterHandsFree(duration: TimeInterval) -> Bool {

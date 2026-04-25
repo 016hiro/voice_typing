@@ -151,12 +151,26 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(asrBackend.rawValue, forKey: "asrBackend") }
     }
 
+    /// v0.6.2: which physical key acts as push-to-talk. Settings → Hotkey
+    /// edits this; AppDelegate observes the publisher and calls
+    /// `HotkeyMonitor.swap(to:)` to re-arm the event tap on change. Default
+    /// `.fn` so existing users see zero behaviour change after upgrade.
+    @Published var pushToTalkTrigger: HotkeyTrigger {
+        didSet { UserDefaults.standard.set(pushToTalkTrigger.rawValue, forKey: "pushToTalkTrigger") }
+    }
+
     @Published var recognizerState: RecognizerState = .unloaded
     @Published var accessibilityGranted: Bool = false
     @Published var microphoneGranted: Bool = false
 
     /// Bumped when model listings (downloaded/deleted/downloading) change, so menus can refresh.
     @Published var modelInventoryTick: Int = 0
+
+    /// v0.6.2: live "is the push-to-talk key currently held" mirror, set by
+    /// AppDelegate's hotkey handler. Drives the Settings → Hotkey indicator
+    /// dot so users can verify their pick actually fires before closing.
+    /// Transient — never persisted.
+    @Published var triggerKeyHeld: Bool = false
 
     /// Last app (by bundle ID) other than VoiceTyping that became active in the
     /// foreground. Maintained by `AppDelegate` via NSWorkspace activation
@@ -199,6 +213,8 @@ final class AppState: ObservableObject {
         self.debugCaptureRetentionDays = storedRetention ?? 7
 
         self.handsFreeEnabled = ud.bool(forKey: "handsFreeEnabled")
+
+        self.pushToTalkTrigger = HotkeyTrigger(rawValueOrDefault: ud.string(forKey: "pushToTalkTrigger"))
 
         let backendRaw = ud.string(forKey: "asrBackend")
         let persisted = backendRaw.flatMap { ASRBackend(rawValue: $0) } ?? .default

@@ -4,7 +4,8 @@
 
 ## Unreleased
 
-_（下个版本的用户可见变更在此累积）_
+### Added
+- **可配置 push-to-talk 键** (Settings → Hotkey)：默认 Fn 不变，可改成 Right Option / Right Command / F13 / F14。每个选项标注副作用（如 "Right Option 字符组合会被禁用"）。Settings 页面顶部有实时按键指示灯，按一下确认你选的键能被识别；不工作就点 Reset 一键回 Fn。既有用户升级后默认值仍是 Fn，行为零变化
 
 ## v0.6.1 — 2026-04-26
 
