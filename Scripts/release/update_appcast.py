@@ -14,8 +14,10 @@ Usage:
 
 - Reads --appcast in place, inserts a new <item> at the top of <channel>
   (newest first), and writes back.
-- Skips insertion if an item with the same <sparkle:version> (build number)
-  already exists — idempotent for reruns.
+- If an item with the same <sparkle:version> (build number) already exists,
+  it is REMOVED and replaced — true idempotency (re-running with a different
+  artifact, e.g. after a re-build, refreshes length + signature). The old
+  "skip if present" was a bug that let stale signatures persist after rebuild.
 - stdlib only (xml.etree + email.utils).
 """
 
@@ -44,12 +46,16 @@ def find_channel(root: ET.Element) -> ET.Element:
     return channel
 
 
-def already_has_build(channel: ET.Element, build: str) -> bool:
-    for item in channel.findall("item"):
+def remove_build_if_present(channel: ET.Element, build: str) -> bool:
+    """Remove any existing <item> with sparkle:version == build. Returns True if
+    one was removed (caller can log replacement vs fresh insert)."""
+    removed = False
+    for item in list(channel.findall("item")):
         v = item.find(sp("version"))
         if v is not None and (v.text or "").strip() == build:
-            return True
-    return False
+            channel.remove(item)
+            removed = True
+    return removed
 
 
 def build_item(args: argparse.Namespace) -> ET.Element:
@@ -109,9 +115,7 @@ def main() -> int:
     root = tree.getroot()
     channel = find_channel(root)
 
-    if already_has_build(channel, args.build):
-        print(f"skip: build {args.build} already present in {appcast_path}")
-        return 0
+    replaced = remove_build_if_present(channel, args.build)
 
     new_item = build_item(args)
     # Insert after the <channel> metadata block, before any existing items
@@ -126,7 +130,8 @@ def main() -> int:
 
     ET.indent(tree, space="  ")
     tree.write(appcast_path, encoding="utf-8", xml_declaration=True)
-    print(f"inserted: version={args.version} build={args.build} into {appcast_path}")
+    verb = "replaced" if replaced else "inserted"
+    print(f"{verb}: version={args.version} build={args.build} into {appcast_path}")
     return 0
 
 
