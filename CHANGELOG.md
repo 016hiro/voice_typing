@@ -6,6 +6,24 @@
 
 _（下个版本的用户可见变更在此累积）_
 
+## v0.6.0.3 — 2026-04-25
+
+### Notes
+- 内部 dummy build：用于跑通 v0.6.0.2 → v0.6.0.3 的 Sparkle 真升级链路（detect → EdDSA 验签 → 替换 → 重启 → TCC 保留），验证通过。无 user-facing 改动
+
+## v0.6.0.2 — 2026-04-25
+
+### Fixed
+- **Sparkle 自动更新链路修复**：v0.6.0 / v0.6.0.1 的 DMG 因 Sparkle helper 签名问题（自签证书 + `--deep` codesign 把 Sparkle 内部 XPC helper 一起重签了，破坏 IPC）无法走 Sparkle 升级。**装着 v0.6.0 / v0.6.0.1 的请手动下载 v0.6.0.2 DMG 拖进 Applications 一次**——之后所有版本的 Sparkle 自更新恢复正常
+
+### Notes
+- 无 user-facing 功能改动；仅修发版基础设施
+
+## v0.6.0.1 — 2026-04-25
+
+### Notes
+- 内部 dummy build：用于验证 Sparkle 升级链路（v0.6.0 → v0.6.0.1）。链路没跑通，根因暴露后由 v0.6.0.2 修复
+
 ## v0.6.0 — 2026-04-24
 
 ### Added

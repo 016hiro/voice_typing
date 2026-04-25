@@ -171,11 +171,24 @@ If TCC is lost: the updated app's cdhash didn't match the old one. Likely cause:
 
 ## Known quirks
 
-_(populate after first real upgrade verification — issue #72)_
+> Verified end-to-end on 2026-04-25 via the v0.6.0.2 → v0.6.0.3 dummy upgrade (issue #72). Lessons from the v0.6.0.1/.2/.3 patch series live below.
 
-- TBD: Confirm Sparkle's app-replace doesn't re-quarantine the new bundle (expected: doesn't, since it's a local FS swap rather than a Finder download)
-- TBD: Confirm TCC grants survive the upgrade (expected: yes, because both old + new bundles signed by same self-signed cert with stable cdhash)
-- TBD: macOS 15.x DMG mount warning — single right-click sufficient or settings dance required?
+### Verified across the upgrade
+
+- ✅ **Sparkle 替换不会重新打 quarantine** — local FS swap, not Finder download. New bundle launches without right-click bypass.
+- ✅ **TCC 授权（Microphone + Accessibility）跨升级保留** — same self-signed cert (`make setup-cert`) gives stable cdhash; macOS keeps grants tied to bundle ID + cert.
+- ✅ **macOS 15.x 首次安装** — 单次右键 → 打开 已足够；不需要进 System Settings → Privacy & Security 走"Open Anyway"。Sparkle 升级后的 .app 完全没 Gatekeeper 再拦。
+
+### Footguns we hit (gated by `make` checks now)
+
+- **Sparkle helper 必须 ad-hoc 签名** — `codesign --force --deep --sign "<self-signed-cert>" $(PAYLOAD)` 把 Sparkle 内部 4 个 helper（Autoupdate / Updater.app / Downloader.xpc / Installer.xpc）一起重签了。Sparkle 的 XPC IPC 要求 helper 跟 host 共享 Apple Team ID **或** 是 ad-hoc。自签证书 `TeamIdentifier=not set`，卡在两条路中间 → Sparkle "Update Error! ... Operation not permitted" + Autoupdate 被 launchd sandbox 拒写 `~/Library/Caches/.../Installation`。
+  - **Fix is in Makefile**: 4 helper 用 `codesign --sign - --preserve-metadata=entitlements,runtime` 重签 → host 用我们 cert 签 (**不带 `--deep`**)。等开 Apple Developer 账号时这两步可以塌成原来的一条 `--deep`（Team ID 天然匹配）。
+
+- **mlx.metallib 嵌入失败必须 hard-fail**（不能只 warn）— `make build` 没 metallib 时只 warn 还继续打包。`make release` 跟着 silent skip 出 9.5MB 残废 DMG（对比正常 ~42MB），Qwen runtime SIGABRT。**Fix in Makefile**: `make dmg` 打包前 hard-check `$(PAYLOAD)/Contents/MacOS/mlx.metallib` 存在。
+
+- **`update_appcast.py` 必须 replace, 不能 skip** — 老版"已存在 build N 就跳过"是 bug-shaped idempotency；DMG 重打之后 appcast 里还是旧 length + 旧 EdDSA 签名 → Sparkle 在 client 报 length / signature mismatch。**Fix in script**: `remove_build_if_present` + insert，真幂等。
+
+- **本地 Swift > CI Swift 时 Stop hook gate 会漏报** — 本地跑 Swift 6.3，CI 是 Swift 6.1.2；6.3 已修的 false positive 在 6.1 还报。Stop hook 跑本地 `make test` → 给绿 → push → CI 挂。Acceptable risk（首次踩到，频率低），不并发装 Xcode 16.4。CI red 时只能靠观察 `gh run list` 兜底。
 
 ## Recovering from disasters
 

@@ -1,24 +1,29 @@
 # STATE
 
-_Last updated: 2026-04-23_
+_Last updated: 2026-04-25 17:00_
 
 ## Current Focus
-v0.5.3 主体功能全部 ship：DebugCaptureWriter 修（`f8d74e0`）→ RecordingPolicy 抽取（`74529fc`）→ Hands-free 模式（`36d422d`）→ 文档同步（`8e2d6de`）→ 胶囊色统一（`ad066d1`）。等用户 dogfood 验证 → close-iteration。原定第三块 Qwen 0.6B echo 调研移到 backlog.md 数据驱动调研段，不卡版本节奏。
+
+v0.6.0 系列已全闭环（v0.6.0 + v0.6.0.1 + v0.6.0.2 + v0.6.0.3）：DMG 分发 + Sparkle 自更新链路用 v0.6.0.2 → v0.6.0.3 真验证通过（#72 close）。期间清掉 CI 5 个版本的 silent red + 装了 Stop hook gate 防再犯。下一版 v0.6.1 scope 待拍板（[`docs/todo/v0.6.1.md`](todo/v0.6.1.md) 占位）。
 
 ## Current Version
-v0.5.2 (Info.plist 未 bump；等 v0.5.3 close-iteration 时一起做)
+
+v0.6.1（scope 待拍板）
 
 ## In-flight Changes
-- 9 个 hands-free 任务全部完成 (#54-#62)，79 tests pass
-- 文档同步中：CHANGELOG / STATE / architecture / gotchas / roadmap / todo/v0.5.3.md
-- 用户即将手动验证：tap Fn → hands-free → 1.5s 静默自停 + tap-cancel + 10s no-speech 取消
+
+无 in-flight。v0.6.0 系列 close 完毕，三件关键文档：
+
+- 收尾段：[`docs/devlog/v0.6.0.md`](devlog/v0.6.0.md) 末尾 close-iteration block
+- 用户面变更：[`CHANGELOG.md`](../CHANGELOG.md) v0.6.0.1/2/3 entries
+- 下版本占位：[`docs/todo/v0.6.1.md`](todo/v0.6.1.md)
 
 ## Next Concrete Step
-1. ✅ Doc 更新 + 胶囊色统一
-2. 用户手动 dogfood hands-free（数天）→ 收信号（阈值校准进 backlog 数据驱动调研段）
-3. v0.5.3 close-iteration：bump version + devlog + tag
+
+填 `docs/todo/v0.6.1.md` 的 scope（用户来定主题）。候选池见该文档末尾。
 
 ## Blockers / Open Questions
-- 无明显 blocker
-- v0.5.1 还差 `git tag v0.5.1`（task #34），可以和 v0.5.3 tag 一起补
-- dogfood 数据完整率从今天起应该 ≥ 95%（writer 已修，开新 session 即可验证）
+
+- v0.6.1 scope 待用户拍板（无 blocker，待输入）
+- `#33` dogfood live mode 5+ 天信号采集 仍 pending（持续累积，不卡版本节奏）
+- `#34` ship v0.5.1 大概率 obsolete（v0.5.x 全 fold 进 v0.6.0），建议确认 scope 时一并 close
