@@ -16,6 +16,8 @@
 
 - **Hardened runtime + 自签名证书 = library validation 拒所有 framework**：`codesign --options runtime` 启用后，dyld 要求加载的 framework 与 host 共享 Apple Team ID；自签名 / ad-hoc 签名的 Team ID 都是空 → 验证策略 fall back 到更严，连同 cert 签的自家 framework 也被拒。错误形式："code signature in '...' (...) "。规避：app entitlements 加 `com.apple.security.cs.disable-library-validation`。等真上 Apple Developer ID + notarize 时这条可以删（Team ID 验证天然通过）。(v0.6.0)
 
+- **`make build` 嵌入 metallib 失败只 warn 不 fail → release 静默打出残废 DMG**：`make build` 的 metallib 嵌入步骤是软失败（dev 没装 Metal Toolchain 时还要能继续 iterate），结果 `make release` 在 metallib 缺失下还是会成功打出 DMG——只是少了 100MB Metal kernel，Qwen ASR runtime SIGABRT。规避：`make dmg` 在打包前 hard-check `$(PAYLOAD)/Contents/MacOS/mlx.metallib` 存在，不在直接 exit 1。触发场景：`swift package clean` / 第一次 setup / SwiftPM 拉新 dep 把 `.build/release/mlx.metallib` 一起清掉。(v0.6.0.1)
+
 ## Swift / SwiftUI / Concurrency
 
 - **SourceKit 索引经常假阳性报 "Cannot find type X in scope"**：编辑后保存触发 indexing race，错误能持续几秒到几十秒。规避：跑 `swift build`，build 干净就忽略 IDE 红线。本项目尤其多发于 `DebugCapture` / `LiveTranscriber` 这类新增类型。

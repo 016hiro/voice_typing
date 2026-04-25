@@ -208,8 +208,20 @@ setup-dmg-tools:
 
 # v0.6.0: Package the freshly-built .app into a distribution DMG.
 # Usage:  make dmg VERSION=0.6.0
+#
+# Hard-checks the build target's "soft" warnings before packaging — the
+# embed-metallib step in `build` only warns when .build/release/mlx.metallib
+# is missing (intentional: dev iterations without Metal Toolchain still want
+# to compile). For release artifacts that's a footgun: silently shipping a
+# DMG without metallib means Qwen ASR crashes on first use. Fail loud here.
 dmg: build setup-dmg-tools
 	@test -n "$(VERSION)" || { echo "error: VERSION not set. Usage: make dmg VERSION=0.6.0" >&2; exit 1; }
+	@test -f $(PAYLOAD)/Contents/MacOS/mlx.metallib || { \
+	  echo "error: $(PAYLOAD) missing mlx.metallib — release artifact would ship broken." >&2; \
+	  echo "       Run 'make metallib' (or 'make setup-metal' if Metal Toolchain not installed)" >&2; \
+	  echo "       and then re-run 'make release ...'." >&2; \
+	  exit 1; \
+	}
 	bash Scripts/release/make_dmg.sh $(VERSION)
 
 # v0.6.0: Full release flow — build + DMG + EdDSA sign + appcast update.
