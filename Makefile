@@ -103,17 +103,21 @@ build: metallib icons
 	done
 	@codesign --force --sign - $(PAYLOAD)/Contents/Frameworks/Sparkle.framework
 	@echo "  ad-hoc signed Sparkle helpers (Autoupdate / Updater.app / Downloader.xpc / Installer.xpc)"
-	# Without --deep, the host codesign won't auto-sign other nested code-bearing
-	# items either (mlx.metallib, SwiftPM resource bundles). Codesign requires
-	# every nested binary be signed before the host signature can be sealed,
-	# so ad-hoc them here. Adding more items? Append to the list below.
+	# Without --deep, the host codesign won't auto-sign nested code-bearing
+	# items. Codesign requires every nested binary be signed before the host
+	# signature can be sealed, but SwiftPM also emits flat resource-only
+	# .bundle directories (for example PrivacyInfo.xcprivacy) that are not
+	# signable bundles. Sign only resource bundles that actually contain code.
 	@codesign --force --sign - $(PAYLOAD)/Contents/MacOS/mlx.metallib
 	@for bundle in $(PAYLOAD)/Contents/Resources/*.bundle; do \
-	    if [ -e "$$bundle" ]; then \
+	    if [ ! -e "$$bundle" ]; then continue; fi; \
+	    if find "$$bundle" -type f \( -perm -111 -o -name '*.dylib' \) | grep -q .; then \
 	        codesign --force --sign - "$$bundle" || exit 1; \
+	    else \
+	        echo "  skipped resource-only bundle $$(basename "$$bundle")"; \
 	    fi; \
 	done
-	@echo "  ad-hoc signed nested code (mlx.metallib + SwiftPM .bundle resources)"
+	@echo "  ad-hoc signed nested code (mlx.metallib + code-bearing SwiftPM .bundle resources)"
 ifeq ($(HAVE_SIGNING_IDENTITY),yes)
 	codesign --force --sign "$(SIGNING_IDENTITY)" \
 	  --entitlements Resources/VoiceTyping.entitlements \
