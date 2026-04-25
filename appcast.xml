@@ -6,12 +6,20 @@
     <description>Updates for VoiceTyping</description>
     <language>en</language>
     <item>
+      <title>Version 0.6.0.3</title>
+      <pubDate>Sat, 25 Apr 2026 09:30:43 GMT</pubDate>
+      <sparkle:version>17</sparkle:version>
+      <sparkle:shortVersionString>0.6.0.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/016hiro/voice_typing/releases/download/v0.6.0.3/VoiceTyping-0.6.0.3.dmg" sparkle:edSignature="ORv3Wyy2QuAF0j0BrR2Z4/2G3iql3wUY2A2Qt6amb5bRGYHnuAQhHTnYn6TWmeOKYYPfXvJFNeeKHgPq9MZ/Ag==" length="42379092" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 0.6.0.2</title>
-      <pubDate>Sat, 25 Apr 2026 08:57:03 GMT</pubDate>
+      <pubDate>Sat, 25 Apr 2026 08:59:06 GMT</pubDate>
       <sparkle:version>16</sparkle:version>
       <sparkle:shortVersionString>0.6.0.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/016hiro/voice_typing/releases/download/v0.6.0.2/VoiceTyping-0.6.0.2.dmg" sparkle:edSignature="YOY7DpCshRZQlx3KlaO9sgEJ67ekJ7uusOOyNR83JxITZFEynwuqdUHHTufcWPQ9tqro9coYBM0Dxxrz+yQYCA==" length="42379047" type="application/octet-stream" />
+      <enclosure url="https://github.com/016hiro/voice_typing/releases/download/v0.6.0.2/VoiceTyping-0.6.0.2.dmg" sparkle:edSignature="LS4zhqkM7RowAkSLbCAbmqF/hdhK61IRzI1gVjjijQx73jnqqka8ITmC6dPb5JetSwQcXy+oXSZ7aelFV7mWAw==" length="42379023" type="application/octet-stream" />
     </item>
     <item>
       <title>Version 0.6.0.1</title>
