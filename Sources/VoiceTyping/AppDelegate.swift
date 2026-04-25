@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let audio = AudioCapture()
     let injector = TextInjector()
     let refiner = LLMRefiner()
-    let hotkeyMonitor = HotkeyMonitor(trigger: HotkeyTrigger(rawValueOrDefault: UserDefaults.standard.string(forKey: "pushToTalkTrigger")))
+    let fnMonitor = FnHotkeyMonitor()
 
     // v0.6.0: Sparkle 2 auto-update. `startingUpdater: true` triggers the
     // first background check shortly after launch and then runs Sparkle's
@@ -96,12 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // the state machine. Properties live here because Swift extensions can't
     // hold stored properties.
 
-    /// Timestamp of the most recent push-to-talk press. Compared against now
-    /// at release to branch tap-vs-hold (threshold = `HandsFree.tapThreshold`).
+    /// Timestamp of the most recent Fn↓. Compared against now at Fn↑ to
+    /// branch tap-vs-hold (threshold = `HandsFree.tapThreshold`).
     var fnPressTime: Date?
-
-    /// Combine subscriptions for state→hotkey-monitor wiring.
-    var triggerSwapCancellables: Set<AnyCancellable> = []
 
     /// True between hands-free entry (Fn↑ < tapThreshold) and stopRecording.
     /// Gates the VAD-event handler — events that fire before this is true
@@ -183,19 +180,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.app.info("Microphone granted: \(granted, privacy: .public)")
         }
 
-        startHotkeyMonitor()
+        startFnMonitor()
         startFrontmostAppTracking()
 
         hotkeyConsumeTask = Task { [weak self] in
             guard let self else { return }
-            for await transition in self.hotkeyMonitor.events {
+            for await transition in self.fnMonitor.events {
                 await MainActor.run { [weak self] in
-                    self?.handleHotkey(transition)
+                    self?.handleFn(transition)
                 }
             }
         }
-
-        observePushToTalkTrigger()
 
         // First-launch onboarding: if the default backend's model isn't on
         // disk and we've never asked the user, confirm before triggering the
@@ -284,7 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        hotkeyMonitor.stop()
+        fnMonitor.stop()
         hotkeyConsumeTask?.cancel()
         recognizerStateTask?.cancel()
         pipelineTask?.cancel()
@@ -439,44 +434,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let wasAX = self.state.accessibilityGranted
                 self.refreshPermissions()
                 if !wasAX && self.state.accessibilityGranted {
-                    self.startHotkeyMonitor()
+                    self.startFnMonitor()
                 }
             }
         }
     }
 
-    private func startHotkeyMonitor() {
+    private func startFnMonitor() {
         do {
-            try hotkeyMonitor.start(promptIfNeeded: true)
+            try fnMonitor.start(promptIfNeeded: true)
             state.accessibilityGranted = true
         } catch {
-            Log.app.warning("Hotkey monitor start failed: \(String(describing: error), privacy: .public)")
+            Log.app.warning("Fn monitor start failed: \(String(describing: error), privacy: .public)")
             state.accessibilityGranted = Permissions.checkAccessibility(prompt: false)
         }
     }
 
-    /// Re-arm the monitor when the user picks a different push-to-talk key in
-    /// Settings. `swap` synthesizes a `.released` first if the old key is held,
-    /// so the PTT state machine can clean up before the tap is torn down.
-    private func observePushToTalkTrigger() {
-        state.$pushToTalkTrigger
-            .removeDuplicates()
-            .dropFirst()
-            .sink { [weak self] newTrigger in
-                guard let self else { return }
-                do {
-                    try self.hotkeyMonitor.swap(to: newTrigger)
-                } catch {
-                    Log.app.warning("Hotkey monitor swap failed: \(String(describing: error), privacy: .public)")
-                }
-            }
-            .store(in: &triggerSwapCancellables)
-    }
-
     // MARK: - Pipeline
 
-    private func handleHotkey(_ transition: HotkeyMonitor.Transition) {
-        state.triggerKeyHeld = (transition == .pressed)
+    private func handleFn(_ transition: FnHotkeyMonitor.Transition) {
         switch transition {
         case .pressed:
             // v0.5.3: Fn-tap during hands-free = cancel (discard audio).

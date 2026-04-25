@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 
 enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     case models
-    case hotkey
     case llm
     case dictionary
     case profiles
@@ -15,7 +14,6 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .models:     return "Models"
-        case .hotkey:     return "Hotkey"
         case .llm:        return "LLM"
         case .dictionary: return "Dictionary"
         case .profiles:   return "Profiles"
@@ -26,7 +24,6 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
     var systemImage: String {
         switch self {
         case .models:     return "waveform"
-        case .hotkey:     return "keyboard"
         case .llm:        return "sparkles"
         case .dictionary: return "character.book.closed"
         case .profiles:   return "text.bubble"
@@ -271,8 +268,6 @@ private struct SettingsView: View {
                 switch selectedTab {
                 case .models:
                     ModelsTab(state: state, onRequestReloadBackend: onRequestReloadBackend)
-                case .hotkey:
-                    HotkeyTab(state: state)
                 case .llm:
                     LLMTab(state: state)
                 case .dictionary:
@@ -1943,148 +1938,6 @@ log stream --predicate 'subsystem == "com.voicetyping.app"' --style compact
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             clearedCount = 0
-        }
-    }
-}
-
-// MARK: - Hotkey tab (v0.6.2)
-
-/// Picker for the push-to-talk key. Selection is *live*: tapping a row mutates
-/// `state.pushToTalkTrigger`, which AppDelegate observes and hot-swaps the
-/// CGEventTap into the new trigger. The indicator at the top reflects whether
-/// the active trigger is currently held — driven by `state.triggerKeyHeld`.
-/// Pressing the active key while this tab is open will also start recording
-/// (the monitor doesn't know the difference); release immediately to stop.
-private struct HotkeyTab: View {
-    @ObservedObject var state: AppState
-
-    var body: some View {
-        VStack(spacing: 14) {
-            SectionCard(title: "Push-to-talk key") {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 10) {
-                        TriggerPulseDot(active: state.triggerKeyHeld)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Press to test: \(state.pushToTalkTrigger.displayName)")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(LG.text)
-                                .fx()
-                            Text("The dot turns green while the selected key is held. If it never lights, your keyboard doesn't send the expected keycode — pick another option or tap Reset.")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(LG.textDim)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer()
-                    }
-
-                    Divider().opacity(0.25)
-
-                    VStack(spacing: 8) {
-                        ForEach(HotkeyTrigger.allCases, id: \.self) { trigger in
-                            TriggerRow(
-                                trigger: trigger,
-                                isSelected: state.pushToTalkTrigger == trigger,
-                                onSelect: { state.pushToTalkTrigger = trigger }
-                            )
-                        }
-                    }
-
-                    HStack {
-                        Spacer()
-                        Button {
-                            state.pushToTalkTrigger = .default
-                        } label: {
-                            Text("Reset to Fn (default)")
-                                .font(.system(size: 12.5, weight: .semibold))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 6)
-                        }
-                        .buttonStyle(.plain)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.white.opacity(0.14))
-                        )
-                        .foregroundStyle(LG.text)
-                        .disabled(state.pushToTalkTrigger == .default)
-                        .opacity(state.pushToTalkTrigger == .default ? 0.4 : 1)
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct TriggerPulseDot: View {
-    let active: Bool
-
-    var body: some View {
-        Circle()
-            .fill(active ? LG.activeBg : Color.white.opacity(0.18))
-            .overlay(
-                Circle().strokeBorder(Color.white.opacity(active ? 0.85 : 0.35), lineWidth: 1)
-            )
-            .frame(width: 14, height: 14)
-            .shadow(color: active ? LG.activeBg.opacity(0.7) : .clear, radius: 6)
-            .animation(.easeOut(duration: 0.15), value: active)
-    }
-}
-
-private struct TriggerRow: View {
-    let trigger: HotkeyTrigger
-    let isSelected: Bool
-    let onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(alignment: .top, spacing: 12) {
-                radioMark
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(trigger.displayName)
-                        .font(.system(size: 13.5, weight: .semibold))
-                        .foregroundStyle(LG.text)
-                        .fx()
-                    Text(trigger.sideEffectNote)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(LG.textDim)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(rowBackground)
-            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private var radioMark: some View {
-        ZStack {
-            Circle()
-                .strokeBorder(Color.white.opacity(isSelected ? 0.9 : 0.4), lineWidth: 1.5)
-                .frame(width: 16, height: 16)
-            if isSelected {
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 8, height: 8)
-            }
-        }
-        .padding(.top, 1)
-    }
-
-    @ViewBuilder
-    private var rowBackground: some View {
-        if isSelected {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color.white.opacity(0.12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5)
-                )
-        } else {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color.white.opacity(0.04))
         }
     }
 }

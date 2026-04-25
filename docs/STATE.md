@@ -4,27 +4,27 @@ _Last updated: 2026-04-26_
 
 ## Current Focus
 
-v0.6.2 实现完成（#80-#88 全部落地，104 tests pass，build 绿）。功能完整：HotkeyTrigger enum + HotkeyMonitor 通用化 + swap API + AppState.pushToTalkTrigger 持久化 + Settings 新 Hotkey tab + Reset 按钮 + Test 指示灯 + README/CHANGELOG。**下一步**：自测 UI（4 个非 Fn 选项 + Reset 行为）→ 决定 ship。Scope 见 [`docs/todo/v0.6.2.md`](todo/v0.6.2.md)。
+v0.6.1 已 ship（DMG + Sparkle appcast 全链路 live）。下一版 **v0.6.2 主题：Push-to-talk 键可配置**——Fn 扩到 5 个 curated 候选（Fn / Right Option / Right Command / F13 / F14）。Settings 加 Hotkey tab + 实时按键检测指示灯 + Reset 按钮。底层 `FnHotkeyMonitor` 一般化为 `HotkeyMonitor`，事件流签名不变。Scope 见 [`docs/todo/v0.6.2.md`](todo/v0.6.2.md)。
 
 ## Current Version
 
-v0.6.1（已 ship）→ 开发中：v0.6.2（实现完成，待自测 + ship）
+v0.6.1（已 ship）→ 开发中：v0.6.2
 
 ## In-flight Changes
 
-v0.6.2 (#80-#88) 全部落地 2026-04-26：
+v0.6.2 (#80-#88)：
 
-- ✅ HotkeyTrigger enum：5 候选 + keycode 映射（spike #81 验证可靠）
-- ✅ HotkeyMonitor：rename FnHotkeyMonitor + 通用化 + swap API + synthesized release
-- ✅ AppState.pushToTalkTrigger + UserDefaults persist
-- ✅ Settings 新 Hotkey tab：radio + Test 指示灯（绑 `state.triggerKeyHeld`）+ Reset
-- ✅ AppDelegate：observe state → `hotkeyMonitor.swap(to:)`；rename fnMonitor / handleFn
-- ✅ HotkeyTriggerTests + HotkeyMonitorSwapTests（12 tests）
-- ✅ README + CHANGELOG Unreleased
+- HotkeyTrigger enum：5 个 curated 候选 + keycode 映射 + 副作用文案
+- HotkeyMonitor（rename FnHotkeyMonitor）：trigger 通用化 + swap API（synthesized release on swap）
+- AppState：`pushToTalkTrigger` 字段 + UserDefaults
+- Settings 新 HotkeyTab：radio + Test 指示灯 + Reset 按钮
+- AppDelegate：监听 trigger 变化 → swap monitor
+
+未开工，scope locked 2026-04-26。落地序见 todo doc。
 
 ## Next Concrete Step
 
-`make build` 装本地、跑 Settings → Hotkey 自测：(1) 切换到 Right Option，按右 Option 键看指示灯亮 + 录音触发；(2) F13/F14 在外接键盘上验证（如果有）；(3) Reset 按钮回 Fn。然后开 release 收尾（Info.plist bump 0.6.2/19 + devlog + `make release`）。
+执行 #81 spike：dev 机上验证 Right Option / Right Command 的 keycode 区分（61 vs 58 / 54 vs 55）。如果不可靠，降级为 "Any Option / Any Command"。这一步决定 HotkeyTrigger enum 的最终分辨粒度。
 
 ## Blockers / Open Questions
 
