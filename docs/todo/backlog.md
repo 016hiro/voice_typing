@@ -22,7 +22,7 @@
 ### 功能扩展
 
 - [ ] **快捷键可配置**：除 Fn 外提供 Right Option / Right Cmd 等替代方案；Settings 窗口加 hotkey picker。
-- [ ] **历史转录记录**：可选保存最近 N 条转录到 Settings → History 标签，支持复制/重新发送。
+- [ ] ~~**历史转录记录**~~：dropped 2026-04-26 — 用户判定不实用，丢出去就丢了符合"语音输入 = 直接产出"的心智模型，加 History tab 反而稀释主路径价值。
 
 > 多模型切换已落地在 v0.2.0，详见 [v0.2.0.md](v0.2.0.md)。自定义词典 + 四档 refiner 已落地在 v0.3.0，详见 [v0.3.0.md](v0.3.0.md)。Per-app 上下文 profile 已落地在 v0.3.1，详见 [../devlog/v0.3.1.md](../devlog/v0.3.1.md)。API key Keychain 迁移 + 稳定签名 + CI 已落地在 v0.4.1，详见 [../devlog/v0.4.1.md](../devlog/v0.4.1.md)。Post-record 流式 (opt-in experimental) 已落地在 v0.4.2，详见 [../devlog/v0.4.2.md](../devlog/v0.4.2.md)。Unit + E2E ASR 回归测试台已落地在 v0.4.3，详见 [../devlog/v0.4.3.md](../devlog/v0.4.3.md)。VAD bundle 预装 + 胶囊去文本 + refine 默认 Off + Advanced 设置 (Developer logging) 已落地在 v0.4.4，详见 [../devlog/v0.4.4.md](../devlog/v0.4.4.md)。VAD 调参 (minSpeech 0.3 / minSilence 0.7) + HallucinationFilter (训练尾巴 + prompt echo) 已落地在 v0.4.5，详见 [../devlog/v0.4.5.md](../devlog/v0.4.5.md)。真 live-mic 流式 + force-split 25s 已落地在 v0.5.0，详见 [../devlog/v0.5.0.md](../devlog/v0.5.0.md)。性能基线 instrument + dl_init 修 + Debug capture toggle + 首次启动检测 + 录音时长提示 已落地在 v0.5.1，详见 [../devlog/v0.5.1.md](../devlog/v0.5.1.md)。Transcription timing 三选一 Picker (行卡片设计) + 5 个 Python stdlib 分析脚本 (`Scripts/analysis/`) + devdoc 规范接入 已落地在 v0.5.2，详见 [../devlog/v0.5.2.md](../devlog/v0.5.2.md)。
 
