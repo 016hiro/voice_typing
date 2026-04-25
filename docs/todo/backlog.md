@@ -9,6 +9,8 @@
 - [x] ~~**首次启动检测不完整模型**~~：v0.5.1 落地。`ModelStore.isComplete` + `repairIfIncomplete`，Whisper 粒度到单个 mlmodelc，Qwen 粒度到 variant 子目录。详见 [../devlog/v0.5.1.md](../devlog/v0.5.1.md)。
 - [x] ~~**录音时长视觉提示**~~：v0.5.1 落地。`state.capsuleOverlayText` 驱动"Xs left" flash，live/batch 分别 60s/10s 警告窗口。详见 [../devlog/v0.5.1.md](../devlog/v0.5.1.md)。
 - [ ] **WhisperKit 下载进度**：当前是 indeterminate。看 upstream 能不能提供细粒度回调。
+- [ ] **手动删模型后再启动 → 静默重下默认 backend**（v0.6.1 暴露的 edge case）：用户清磁盘删了模型 → `onboardingShownAt` 已设过 → 不再弹 onboarding → activateBackend 直接触发 1.4 GB 重下。需要在 prepare 触发下载前判 "已 onboarded 但模型缺失" 这个新组合 → 弹 confirm 或退化到 Settings → Manage Models 引导。
+- [ ] **HF probe 持续 TLS 失败时给用户 troubleshooting 提示**（v0.6.1 dogfood 暴露）：常见根因是系统代理（clash 等）把 `huggingface.co` / `hf-mirror.com` 路由到了不可达的远端代理。可以做：(a) README 加一段 "如果 probe 一直失败，加 DIRECT 规则"；(b) 检测到代理在跑 + probe 持续失败时弹一次 toast 提示用户。先做 (a)。
 
 ### 开发流程
 

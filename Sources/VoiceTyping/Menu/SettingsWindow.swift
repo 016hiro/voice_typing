@@ -893,7 +893,11 @@ private struct ModelRow: View {
                 if p < 0 { return "Loading…" }
                 return String(format: "Downloading %d%%", Int(p * 100))
             case .failed(let err): return "Failed — \(err.localizedDescription)"
-            case .unloaded:        return "Preparing…"
+            case .unloaded:
+                // Recognizer never activated (e.g. user deferred onboarding).
+                // Distinguish "model exists but not loaded yet" from "no model
+                // on disk" so the row doesn't lie about progress.
+                return ModelStore.isDownloaded(backend) ? "Preparing…" : "Not downloaded · \(backend.estimatedSizeLabel) to download"
             }
         }
         return ModelStore.isDownloaded(backend)
@@ -902,7 +906,18 @@ private struct ModelRow: View {
     }
 
     private var actionLabel: String {
-        if backend == state.asrBackend { return "Active" }
+        if backend == state.asrBackend {
+            // Selected backend is the source-of-truth for the action label
+            // only when the recognizer actually succeeded loading. Otherwise
+            // the row needs to surface the real next step ("Download" /
+            // "Retry") instead of a stale "Active".
+            switch state.recognizerState {
+            case .ready:    return "Active"
+            case .loading:  return "Loading…"
+            case .failed:   return ModelStore.isDownloaded(backend) ? "Retry" : "Download"
+            case .unloaded: return ModelStore.isDownloaded(backend) ? "Activate" : "Download"
+            }
+        }
         return ModelStore.isDownloaded(backend) ? "Switch" : "Download & Switch"
     }
 

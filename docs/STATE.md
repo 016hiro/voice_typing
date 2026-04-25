@@ -1,28 +1,31 @@
 # STATE
 
-_Last updated: 2026-04-25 17:30_
+_Last updated: 2026-04-26_
 
 ## Current Focus
 
-v0.6.0 系列已全闭环（v0.6.0 + v0.6.0.1 + v0.6.0.2 + v0.6.0.3）：DMG 分发 + Sparkle 自更新链路用 v0.6.0.2 → v0.6.0.3 真验证通过（#72 close）。期间清掉 CI 5 个版本的 silent red + 装了 Stop hook gate 防再犯。**下一版号 + 主题待定**——先在 v0.6.0.3 上 dogfood 一段时间。
+v0.6.1 已 close（doc 闭环完成）。主题：**中国大陆可用性**——HF 自动镜像兜底（race + bandwidth probe，零 Settings UI）+ 首次安装 onboarding confirm dialog（Qwen 1.7B）。下一步：bump Info.plist + `make release VERSION=0.6.1` + ship。**下一版号 + 主题 TBD**——沿用 v0.6.0.x 收尾后的 dogfood 模式，不预 bump。
 
 ## Current Version
 
-v0.6.0.3（已发布在 [GitHub Releases](https://github.com/016hiro/voice_typing/releases/tag/v0.6.0.3) + Sparkle appcast）
+v0.6.1（doc closed 2026-04-26，待 ship）
 
 ## In-flight Changes
 
-无 in-flight。v0.6.0 系列 close 完毕，三件关键文档：
+无 in-flight（v0.6.1 close 完毕）。三件关键文档：
 
-- 收尾段：[`docs/devlog/v0.6.0.md`](devlog/v0.6.0.md) 末尾 close-iteration block
-- 用户面变更：[`CHANGELOG.md`](../CHANGELOG.md) v0.6.0.1/2/3 entries
-- 发版经验沉淀：[`docs/release-process.md`](release-process.md) Known quirks（v0.6.0.x 4 个 footgun + verified 升级路径）
+- 收尾段：[`docs/devlog/v0.6.1.md`](devlog/v0.6.1.md) close-iteration block
+- 用户面变更：[`CHANGELOG.md`](../CHANGELOG.md) v0.6.1 section
+- 归档：[`docs/todo/v0.6.1.md`](todo/v0.6.1.md) `_Closed_` 头
+
+未完成项已迁入 [`docs/todo/backlog.md`](todo/backlog.md)：手动删模型后静默重下 + HF probe TLS 失败 troubleshooting 文档。
 
 ## Next Concrete Step
 
-dogfood v0.6.0.3，攒真实使用信号 / 暴露遗漏 bug。下一版号（v0.6.1 patch / v0.7.0 主题 / 其他）等用户拍板再开 todo doc。
+执行 v0.6.1 ship：Info.plist bump 0.6.0.3/17 → 0.6.1/18 → `make release VERSION=0.6.1 BUILD=18` → gh release + appcast push + tag → 升级链路实测一次。
 
 ## Blockers / Open Questions
 
-- 下一版主题待定（不卡，dogfood 期间观察）
+- 100 KB/s 阈值 + 5x 倍率：ship 后 dogfood 数据定稿
+- hf-mirror SLA 不确定：dogfood 期观察命中率
 - `#33` dogfood live mode 5+ 天信号采集 仍 pending（持续累积）

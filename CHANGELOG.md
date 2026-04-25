@@ -6,6 +6,19 @@
 
 _（下个版本的用户可见变更在此累积）_
 
+## v0.6.1 — 2026-04-26
+
+### Added
+- **首次启动 onboarding**：装好后启动会弹一次确认对话框，提示下载默认模型 (Qwen3-ASR 1.7B, ~1.4 GB)。点 "Later" 可跳过，之后从 **Settings → Manage Models** 手动下载任意模型。既有用户（已有缓存模型）不会被再问
+- **HuggingFace 自动镜像兜底**：启动时自动测速，若官方 HF 慢/不通则切到 `hf-mirror.com`。零配置、零账号、零环境变量。中国大陆用户开箱即用
+
+### Fixed
+- Settings → Manage Models 的当前 backend 行在"未下载模型"状态下不再误显示 "Active" / "Preparing…"；现在显示真实状态 ("Not downloaded" + "Download" 按钮)，按 Fn 时也会准确提示而不是 "still loading"
+
+### Notes
+- 模型仍存在 `~/Library/Application Support/VoiceTyping/models/`；Sparkle 升级**不会**重新下载模型（只换 `.app`）
+- 如果你的网络通过 VPN/代理（如 clash），且日志显示 probe 持续 TLS 失败：把 `huggingface.co` 和 `hf-mirror.com` 加 DIRECT 规则即可
+
 ## v0.6.0.3 — 2026-04-25
 
 ### Notes

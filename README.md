@@ -74,6 +74,12 @@ Once v0.6.0+ is installed, updates arrive automatically via Sparkle:
 - App checks once on launch and once per day in the background.
 - Manual check: status-bar menu → **Check for Updates…**.
 - Update artifacts are EdDSA-signed; the app refuses to apply tampered updates.
+- **Models survive updates.** Speech models live under `~/Library/Application Support/VoiceTyping/models/` — Sparkle only swaps the `.app`, so code-only updates never re-download multi-GB weights.
+
+### Models (v0.6.1+)
+
+- **First launch** prompts you to download the default model (Qwen3-ASR 1.7B, ~1.4 GB). Pick "Later" to skip and choose a different model from **Settings → Manage Models**.
+- **Download source** is auto-selected per launch: prefers HuggingFace, falls back to `hf-mirror.com` if the official endpoint is slow / unreachable. Zero configuration, no token, no account.
 
 ## Documentation
 

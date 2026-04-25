@@ -140,8 +140,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let profileSnippet: String?
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Set HF_ENDPOINT before any HubApi (WhisperKit / speech-swift) is
+        // constructed. swift-transformers' HubApi reads this env var at init
+        // time, so all downstream model downloads route through whichever
+        // endpoint we pick here.
+        HFEndpointResolver.applyCachedOrDefault()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         ModelStore.migrateV010WhisperLayoutIfNeeded()
+
+        // Background bandwidth probe → re-setenv with the winner and persist
+        // to cache for next launch. Detached so it doesn't block any of the
+        // app-init steps below; the prepare() path awaits this via
+        // `awaitResolutionIfPending(...)` before actually pulling models.
+        Task.detached(priority: .utility) {
+            _ = await HFEndpointResolver.resolveAndApply()
+        }
 
         // v0.5.1 Debug Capture maintenance: purge by age + size at launch.
         // Cheap (file-system stats only) so doing it inline before the rest of
@@ -176,8 +192,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Construct and prepare the initial backend.
-        activateBackend(state.asrBackend, forceReload: true)
+        // First-launch onboarding: if the default backend's model isn't on
+        // disk and we've never asked the user, confirm before triggering the
+        // ~1.4 GB Qwen download. If they defer, skip auto-activation entirely
+        // — they can opt in later via Settings → Manage Models.
+        let deferActivation = shouldShowFirstLaunchOnboarding() && !showFirstLaunchOnboarding()
+        if !deferActivation {
+            activateBackend(state.asrBackend, forceReload: true)
+        } else {
+            Log.app.info("Onboarding: user deferred initial download; recognizer not auto-activated")
+            // Surface "no model" as `.failed` so Settings + capsule show the
+            // real situation instead of the inherited `.unloaded` default
+            // (which the rest of the UI reads as "Preparing…" / "still
+            // loading"). The error message points the user to the manual
+            // download flow.
+            let err = NSError(
+                domain: "VoiceTyping.Onboarding",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No model downloaded. Open Settings → Manage Models to install one."]
+            )
+            state.recognizerState = .failed(err)
+        }
 
         // If `main.swift`'s migration step failed to write the extracted
         // API key into Keychain (rare — only on truly degraded Keychain
@@ -187,6 +222,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let failure = LLMConfigStore.migrationFailure {
             showAPIKeyMigrationFailureAlert(reason: failure)
         }
+    }
+
+    private func shouldShowFirstLaunchOnboarding() -> Bool {
+        let ud = UserDefaults.standard
+        if ud.object(forKey: "onboardingShownAt") != nil {
+            return false  // already asked once
+        }
+        if ModelStore.isComplete(state.asrBackend) {
+            return false  // model already on disk (e.g. dev install with prior cache)
+        }
+        return true
+    }
+
+    /// Returns true iff the user confirmed the download. Marks onboarding
+    /// as shown either way so we never ask twice.
+    private func showFirstLaunchOnboarding() -> Bool {
+        let backend = state.asrBackend
+        let alert = NSAlert()
+        alert.messageText = "Download speech recognition model?"
+        alert.informativeText = """
+        VoiceTyping needs to download \(backend.displayName) (\(backend.estimatedSizeLabel)) before \
+        you can dictate. The download runs in the background.
+
+        You can also pick a different model later from Settings → Manage Models.
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Download Now")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        UserDefaults.standard.set(Date(), forKey: "onboardingShownAt")
+        return response == .alertFirstButtonReturn
     }
 
     private func showAPIKeyMigrationFailureAlert(reason: String) {
@@ -308,7 +375,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Kick off prepare on detached task — may download
-        backendSwapTask = Task.detached { [recognizer = newRecognizer] in
+        backendSwapTask = Task.detached { [recognizer = newRecognizer, backend] in
+            // First-download path: wait for the bandwidth probe so we route
+            // through the right endpoint instead of a stale default. Cached
+            // installs skip the wait (no download about to happen).
+            if !ModelStore.isComplete(backend) {
+                await HFEndpointResolver.awaitResolutionIfPending()
+            }
             do {
                 try await recognizer.prepare()
             } catch {
