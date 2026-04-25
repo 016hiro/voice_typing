@@ -18,6 +18,8 @@
 
 - **`make build` 嵌入 metallib 失败只 warn 不 fail → release 静默打出残废 DMG**：`make build` 的 metallib 嵌入步骤是软失败（dev 没装 Metal Toolchain 时还要能继续 iterate），结果 `make release` 在 metallib 缺失下还是会成功打出 DMG——只是少了 100MB Metal kernel，Qwen ASR runtime SIGABRT。规避：`make dmg` 在打包前 hard-check `$(PAYLOAD)/Contents/MacOS/mlx.metallib` 存在，不在直接 exit 1。触发场景：`swift package clean` / 第一次 setup / SwiftPM 拉新 dep 把 `.build/release/mlx.metallib` 一起清掉。(v0.6.0.1)
 
+- **Sparkle 自更新 + 自签证书：`--deep` 重签 Sparkle 的 helper 会让 IPC 拒连**：自签证书的 `TeamIdentifier=not set`。Sparkle 2 的 XPC 安全模型要求 Autoupdate / Updater.app / Downloader.xpc / Installer.xpc 跟宿主"要么共享 Apple Team ID，要么 ad-hoc"。我们的 `codesign --force --deep --sign "VoiceTyping Dev"` 把这 4 个 helper 全用自签证书重签了——夹在两条路中间，Sparkle 启动 Autoupdate 后内部 sandbox profile 拒它写 `~/Library/Caches/com.voicetyping.app/.../Installation`，user 看到 generic "An error occurred while running the updater"。规避：Makefile 先把 Sparkle 4 个 helper 用 `codesign --sign -`（真 ad-hoc）+ `--preserve-metadata=entitlements,runtime` 重签，**然后宿主签名时不能加 `--deep`**（会覆盖回去）。Sparkle.framework 本身（不是 helper 子组件）用 ad-hoc 也行，宿主 cert 也行——但其内部 4 个 binary 必须 ad-hoc。等真上 Apple Developer ID 时这条作废（Team ID 天然匹配，整体 `--deep` 重签 OK）。(v0.6.0.2)
+
 ## Swift / SwiftUI / Concurrency
 
 - **SourceKit 索引经常假阳性报 "Cannot find type X in scope"**：编辑后保存触发 indexing race，错误能持续几秒到几十秒。规避：跑 `swift build`，build 干净就忽略 IDE 红线。本项目尤其多发于 `DebugCapture` / `LiveTranscriber` 这类新增类型。

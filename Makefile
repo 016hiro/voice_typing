@@ -85,14 +85,32 @@ build: metallib icons
 	else \
 	  echo "  [warn] Resources/SileroVAD/model.safetensors missing — streaming will download VAD on first use."; \
 	fi
+	# Sparkle's XPC IPC requires Autoupdate / Updater.app / Downloader.xpc /
+	# Installer.xpc to either share a real Apple Team ID with the host OR be
+	# ad-hoc signed. Self-signed certs have TeamIdentifier=not set, which
+	# fails both branches → Sparkle's "An error occurred while running the
+	# updater" + "Operation not permitted" creating Installation cache dir.
+	# Re-sign Sparkle's helpers ad-hoc with `--sign -`, host gets our cert.
+	# IMPORTANT: do NOT use --deep on the host codesign below — it would
+	# overwrite these ad-hoc signatures with our cert and re-break Sparkle.
+	@SPARKLE_ROOT="$(PAYLOAD)/Contents/Frameworks/Sparkle.framework/Versions/B"; \
+	for inner in \
+	    "$$SPARKLE_ROOT/XPCServices/Downloader.xpc" \
+	    "$$SPARKLE_ROOT/XPCServices/Installer.xpc" \
+	    "$$SPARKLE_ROOT/Updater.app" \
+	    "$$SPARKLE_ROOT/Autoupdate"; do \
+	    codesign --force --sign - --preserve-metadata=entitlements,runtime "$$inner" || exit 1; \
+	done
+	@codesign --force --sign - $(PAYLOAD)/Contents/Frameworks/Sparkle.framework
+	@echo "  ad-hoc signed Sparkle helpers (Autoupdate / Updater.app / Downloader.xpc / Installer.xpc)"
 ifeq ($(HAVE_SIGNING_IDENTITY),yes)
-	codesign --force --deep --sign "$(SIGNING_IDENTITY)" \
+	codesign --force --sign "$(SIGNING_IDENTITY)" \
 	  --entitlements Resources/VoiceTyping.entitlements \
 	  --options runtime \
 	  $(PAYLOAD)
-	@echo "  signed with '$(SIGNING_IDENTITY)' (stable cdhash)"
+	@echo "  signed host with '$(SIGNING_IDENTITY)' (stable cdhash; no --deep, Sparkle helpers stay ad-hoc)"
 else
-	codesign --force --deep --sign - \
+	codesign --force --sign - \
 	  --entitlements Resources/VoiceTyping.entitlements \
 	  --options runtime \
 	  $(PAYLOAD)
