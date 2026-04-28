@@ -16,6 +16,10 @@ build/
 Resources/AppIcon.iconset/
 __pycache__/
 docs/devlog/analysis/
+# Throwaway venv used by Scripts/perf/ (mlx-lm + huggingface_hub for the
+# resource baseline audit). Big (~750 MB), machine-specific, recreatable:
+#   python3 -m venv .venv-perf && .venv-perf/bin/pip install mlx-lm hf_transfer
+.venv-perf/
 # v0.6.0 Sparkle: never commit private update-signing keys. The Keychain
 # is the authoritative store; `generate_keys -x` produces export files here
 # only for password-manager backup.

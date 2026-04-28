@@ -40,7 +40,7 @@
   - Apple SFSpeechRecognizer 实现（无依赖、零下载、低延迟，但中英混杂效果差）
   - OpenAI Whisper API 实现（云端、最高准确度、需 key）
 - [ ] **多 LLM 支持 + Refine 专版**：`LLMRefiner` 抽象成协议，Claude / Gemini / 本地 Ollama 多实现。同版处理 Live + refine 组合设计（Cmd+Z chain 跨段问题）+ refine I/O capture（v0.5.1 punted）。
-- [ ] **本地 MLX refiner**：v0.5.0 候选，摆脱 API key 依赖。挂在 Refine 专版一起做或独立主题。
+- [x] **本地 MLX refiner**：~~v0.5.0 候选~~ → **下一版锁定主题 (2026-04-29)**。选型 `mlx-community/Qwen3.5-4B-MLX-4bit`，资源 audit + 决策依据见 [`../perf/baseline.md`](../perf/baseline.md)。Tier strategy: 8 GB 不暴露 / 16 GB opt-in 带警告 / 24 GB+ opt-in 默认 OFF。Scope doc 实施前再开。
 
 ## 长期 / 想法池
 
