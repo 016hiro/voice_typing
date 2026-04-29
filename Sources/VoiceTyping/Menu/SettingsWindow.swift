@@ -938,6 +938,14 @@ private struct LLMTab: View {
     @State private var showAPIKey: Bool = false
     @State private var testStatus: TestStatus = .idle
 
+    // v0.6.3 local refiner UI state. RAMTier is read once at view init —
+    // it never changes within a session (would require a Mac swap).
+    private let ramTier = RAMTier.current
+    @StateObject private var localDownloader = LocalRefinerDownloader()
+    @State private var showDownloadConfirm: Bool = false
+    @State private var localIsDownloaded: Bool = ModelStore.isLocalRefinerComplete()
+    @State private var localSizeOnDisk: Int64 = ModelStore.localRefinerSizeOnDisk
+
     enum TestStatus: Equatable {
         case idle, running
         case ok(String)
@@ -973,6 +981,8 @@ private struct LLMTab: View {
                 .disabled(state.refineMode == .off)
                 .padding(.top, 2)
             }
+
+            localRefinerSection
 
             SectionCard(title: "API") {
                 LabeledField(title: "API URL") {
@@ -1105,6 +1115,149 @@ private struct LLMTab: View {
                     testStatus = .failed(msg)
                 }
             }
+        }
+    }
+
+    // MARK: - v0.6.3 Local refiner UI
+
+    @ViewBuilder
+    private var localRefinerSection: some View {
+        switch ramTier {
+        case .low:
+            // Hide the section entirely — not enough RAM. A single line in
+            // the Refinement card area would be noisy; instead leave it
+            // implicit. Settings doesn't currently expose RAM detection
+            // anywhere else, and the user has no actionable affordance.
+            EmptyView()
+        case .mid, .high:
+            SectionCard(title: "Local refiner (Qwen3.5-4B)") {
+                Toggle(isOn: localToggleBinding) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Use on-device MLX refiner")
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(LG.text)
+                            .fx()
+                        Text("Refine without API key or network. Slower than cloud — first refine after long idle may take 5–30 s while macOS decompresses weights.")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(LG.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .disabled(localDownloader.isActive)
+
+                if ramTier == .mid {
+                    Label("Will use ~2.6 GB RAM. May cause swapping on heavy multitasking.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.top, 2)
+                }
+
+                localStatusFooter
+            }
+            .alert("Download Qwen3.5-4B (~2.6 GB)?",
+                   isPresented: $showDownloadConfirm) {
+                Button("Download") {
+                    state.localRefinerEnabled = true
+                    localDownloader.start()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Used for local refining. Saved to:\n\(ModelStore.localRefinerDirectory.path)")
+            }
+            .onChange(of: localDownloader.phase) { _, newPhase in
+                if case .succeeded = newPhase {
+                    localIsDownloaded = true
+                    localSizeOnDisk = ModelStore.localRefinerSizeOnDisk
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var localStatusFooter: some View {
+        switch localDownloader.phase {
+        case .downloading(let written, let total):
+            VStack(alignment: .leading, spacing: 4) {
+                ProgressView(value: total > 0 ? Double(written) / Double(total) : nil) {
+                    HStack {
+                        Text(downloadProgressLabel(written: written, total: total))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Cancel") { localDownloader.cancel() }
+                            .controlSize(.small)
+                            .buttonStyle(.borderless)
+                    }
+                }
+                .progressViewStyle(.linear)
+            }
+            .padding(.top, 4)
+        case .failed(let msg):
+            HStack(alignment: .top, spacing: 6) {
+                Label("Download failed: \(msg)", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                Spacer()
+                Button("Retry") { localDownloader.start() }
+                    .controlSize(.small)
+            }
+            .font(.caption)
+            .padding(.top, 4)
+        case .succeeded, .idle:
+            if localIsDownloaded {
+                HStack {
+                    Label("Downloaded · \(Int64(localSizeOnDisk).humanReadableBytes)",
+                          systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                    Spacer()
+                    Button("Remove") { removeLocalModel() }
+                        .controlSize(.small)
+                        .disabled(state.localRefinerEnabled)
+                        .help(state.localRefinerEnabled
+                              ? "Turn off the toggle first"
+                              : "Delete weights from disk")
+                }
+                .padding(.top, 4)
+            }
+        }
+    }
+
+    private var localToggleBinding: Binding<Bool> {
+        Binding(
+            get: { state.localRefinerEnabled },
+            set: { newValue in
+                if newValue {
+                    if localIsDownloaded {
+                        state.localRefinerEnabled = true
+                    } else {
+                        showDownloadConfirm = true
+                        // Toggle visually returns to off while user decides.
+                        // If they confirm, alert handler sets it back to on.
+                    }
+                } else {
+                    state.localRefinerEnabled = false
+                }
+            }
+        )
+    }
+
+    private func downloadProgressLabel(written: Int64, total: Int64) -> String {
+        if total > 0 {
+            let pct = Int((Double(written) / Double(total)) * 100)
+            return "Downloading… \(pct)% · \(Int64(written).humanReadableBytes) / \(Int64(total).humanReadableBytes)"
+        }
+        return "Downloading… \(Int64(written).humanReadableBytes)"
+    }
+
+    private func removeLocalModel() {
+        do {
+            try ModelStore.deleteLocalRefiner()
+            localIsDownloaded = false
+            localSizeOnDisk = 0
+        } catch {
+            Log.app.error("Failed to delete local refiner: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

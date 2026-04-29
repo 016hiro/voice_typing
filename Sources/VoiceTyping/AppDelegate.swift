@@ -10,15 +10,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let injector = TextInjector()
     let fnMonitor = FnHotkeyMonitor()
 
-    /// Refiner snapshot — read fresh per-call so Settings updates to
-    /// `state.llmConfig` take effect on the very next refine without any
-    /// pub/sub plumbing. `CloudLLMRefiner` is cheap to allocate (no loaded
-    /// weights, no persistent connections — `URLSessionConfiguration.ephemeral`
-    /// is rebuilt per chat call). When the v0.6.3 #R6 local refiner lands,
-    /// this property will switch on `state.refinerBackend` and return either
-    /// the cheap cloud snapshot or the persistent local instance.
+    /// On-device MLX refiner — held as a singleton so the actor's lazy load +
+    /// loaded weights survive across refine calls. Created lazily so users who
+    /// never enable it don't pay any allocation cost.
+    private lazy var localRefinerInstance: LocalMLXRefiner = {
+        LocalMLXRefiner(modelDirectory: ModelStore.localRefinerDirectory)
+    }()
+
+    /// Routes to either the singleton local refiner or a fresh CloudLLMRefiner
+    /// snapshot per call. Cloud is cheap to recreate (no weights, ephemeral
+    /// URLSession), so reading `state.llmConfig` per access keeps Settings
+    /// edits live without any pub/sub plumbing. Local stays warm.
     var refiner: any LLMRefining {
-        CloudLLMRefiner(config: state.llmConfig)
+        if state.localRefinerEnabled {
+            return localRefinerInstance
+        }
+        return CloudLLMRefiner(config: state.llmConfig)
     }
 
     // v0.6.0: Sparkle 2 auto-update. `startingUpdater: true` triggers the

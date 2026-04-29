@@ -103,6 +103,15 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// v0.6.3: when true, refinement uses on-device MLX (LocalMLXRefiner)
+    /// instead of the cloud API (CloudLLMRefiner). Independent of `refineMode`
+    /// — `.off` still bypasses both. Hidden in Settings UI on RAMTier `.low`
+    /// (< 16 GB) since the 2.6 GB weights would push such Macs into hard swap.
+    /// Default off so existing users see no behavior change at upgrade time.
+    @Published var localRefinerEnabled: Bool {
+        didSet { UserDefaults.standard.set(localRefinerEnabled, forKey: "localRefinerEnabled") }
+    }
+
     /// v0.5.1 Debug Data Capture — when on, every recording session's audio +
     /// per-segment text + inject result land under
     /// `~/Library/Application Support/VoiceTyping/debug-captures/<session>/`.
@@ -190,6 +199,8 @@ final class AppState: ObservableObject {
         let dev = ud.bool(forKey: "developerMode")
         self.developerMode = dev
         Log.devMode = dev
+
+        self.localRefinerEnabled = ud.bool(forKey: "localRefinerEnabled")
 
         self.debugCaptureEnabled = ud.bool(forKey: "debugCaptureEnabled")
         // Default retention 7 days. `object(forKey:)` returns nil for never-set
