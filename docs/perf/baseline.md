@@ -203,7 +203,21 @@ S2 idle (Qwen 1.7B) = 2498 MB. S3 during 30s transcribe = 2520 MB peak. **Delta 
 
 S6 demonstrated this clearly: with Qwen3.5-4B holding ~2.6 GB and VoiceTyping idle, VoiceTyping's RSS dropped from 2498 MB to **80 MB**. Pages went to the compressor segment; no swap-out (the dev box's 1824 MB swap was overnight residue from other apps, unchanged during S6).
 
-**Implication for user-perceived latency**: switching from "idle for minutes" back to "press Fn" will have a one-time fault-back cost as compressed pages decompress. Our log shows this is in the few-hundred-ms range (550ms cold tail vs 99ms warm). Acceptable.
+**Original cost estimate (revised below)**: switching from "idle for minutes" back to "press Fn" was first observed at 550ms cold tail vs 99ms warm — assumed acceptable. **DOGFOOD UPDATE 2026-04-29**: real cold-decompress cost in normal multitasking conditions (Claude Desktop + 3× claude CLI + browsers + ChatGPT + Warp coresident, total user-process RSS ~6 GB on 24 GB Mac) is **9000-30000ms** for Qwen 1.7B (8-bit MLX, ~2.5 GB weights). Measured in app log:
+
+```
+17:44:55  qwen-asr-1.7b live  asr_ms=30801  ← first Fn after ~hour idle
+17:45:26  qwen-asr-1.7b live  asr_ms=9907   ← second Fn 31s later, still cold
+17:47:31  qwen-asr-1.7b live  asr_ms=9598   ← third, still recovering
+```
+
+vs healthy baseline 99-550ms. Slowdown 17-56×.
+
+**Trigger mechanism (corrected)**: not swap pressure (free RAM was 8 GB at observation), but macOS **compressor** subsystem deciding 2.5 GB of unused mmap'd weights are "cold" and squeezing them into ~80 MB compressed segment. Decompression on next access is the latency hit.
+
+**Decision split (per user 2026-04-29)**:
+- ASR weights — **MUST stay warm** (every Fn press is critical-path; user can't tolerate "wait 10s before first word transcribes"). Triggers v0.6.4 keep-alive patch (see [`docs/todo/v0.6.4.md`](../todo/v0.6.4.md))
+- Refiner weights — **OK to be compressed** (refine has built-in "wait" UX, cold decompress 5-30s acceptable). v0.6.3 LocalMLXRefiner won't be kept warm, just labeled "warming up..." in capsule on first refine after long idle
 
 ### 4. ANE contention is a non-issue for our usage pattern
 
@@ -212,6 +226,24 @@ Refiner runs sequentially after ASR completes (Fn-release triggers refiner kicko
 ### 5. CPU is bottleneck-free on M4 Pro
 
 Peak CPU during transcription stayed under **45% of one core** (~3% total on 14-core M4 Pro). The heavy lifting goes to ANE. CPU is not a constraint for any backend.
+
+### 6. Swift `mlx-swift-lm` integration path validated (2026-04-29 spike)
+
+Throwaway spike under `Scripts/perf/refiner_spike/` (Package.swift + main.swift) confirmed the production path for v0.6.3 LocalMLXRefiner:
+
+- **Dependency**: `ml-explore/mlx-swift-lm` 3.31.3 (NOT mlx-swift-examples — they split the LLM libraries to a dedicated SwiftPM-productized repo in 2025). With macros: also `huggingface/swift-huggingface` 0.9.0 + `huggingface/swift-transformers` 1.3.0
+- **Build**: `swift build -c release` resolves cleanly. Metal shaders need the existing `make metallib` step (already wired into our Makefile via speech-swift's `build_mlx_metallib.sh`); copy `mlx.metallib` next to executable
+- **Qwen3 family**: first-class supported — `Libraries/MLXLLM/Models/Qwen35.swift` + `qwen3_5` registered in `LLMModelFactory`
+- **`enable_thinking=False`**: passes cleanly via `ChatSession(model, additionalContext: ["enable_thinking": false])` → flows through MLXLMCommon `Tokenizer.applyChatTemplate` → swift-transformers Jinja runtime → Qwen3 chat-template `{% if enable_thinking %}` branch. Verified empirically: with the flag, output is clean Chinese polish (no `<think>` block); without, output starts with full `<think>...chain-of-thought...</think>` then the answer
+- **Inference**: warm refine ~0.5s on 0.6B (small spike model used to avoid RAM pressure during dogfood); 4B baseline numbers (0.9s, ~2.6 GB RSS) from prior Python audit still hold (same MLX C++ kernel)
+
+**Implication for v0.6.3**: zero-research left for #R4. Implementation can proceed directly using the spike's Package.swift template as the model.
+
+### 7. macOS user-process baseline can be much larger than expected
+
+Spike investigation surfaced an under-appreciated load: a "lightly used" 24 GB Mac running typical Claude developer workflow (Claude Desktop + 3× Claude Code CLI + Warp + Chrome + Safari + ChatGPT + VSCode coresident) has user-process RSS ~6 GB + wired memory 5.25 GB + compressor segment 0.65 GB = ~12 GB always-resident before VoiceTyping/Qwen ASR even loads. Free RAM at observation: ~8 GB.
+
+This recalibrates the "Per-RAM-tier extrapolation" table (below): the "OS + user baseline" estimates of 3–5 GB are conservative for users running modern Electron-heavy IDE/chat ecosystems. Actual could be 8-12 GB before any of our processes run.
 
 ## Headroom on 24 GB (this dev box)
 
