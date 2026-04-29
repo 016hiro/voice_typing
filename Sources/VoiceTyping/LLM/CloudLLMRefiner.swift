@@ -30,7 +30,7 @@ final class CloudLLMRefiner: LLMRefining {
         guard let systemPrompt = mode.systemPrompt else { return text }    // .off
         guard config.hasCredentials else { return text }
 
-        let finalSystem = Self.compose(
+        let finalSystem = LLMRefiningHelpers.compose(
             systemPrompt: systemPrompt,
             profileSnippet: profileSnippet,
             glossary: glossary
@@ -41,27 +41,14 @@ final class CloudLLMRefiner: LLMRefining {
                 system: finalSystem,
                 user: trimmed
             )
-            let cleaned = Self.stripQuotesAndCode(reply).trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = LLMRefiningHelpers.stripQuotesAndCode(reply)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             Log.llm.info("Refined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars")
             return cleaned.isEmpty ? text : cleaned
         } catch {
             Log.llm.warning("Refine failed: \(String(describing: error), privacy: .public)")
             return text
         }
-    }
-
-    private static func compose(systemPrompt: String,
-                                profileSnippet: String?,
-                                glossary: String?) -> String {
-        var parts: [String] = [systemPrompt]
-        if let snippet = profileSnippet?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !snippet.isEmpty {
-            parts.append(snippet)
-        }
-        if let glossary, !glossary.isEmpty {
-            parts.append(glossary)
-        }
-        return parts.joined(separator: "\n\n")
     }
 
     /// Sends a tiny test message to confirm credentials work.
@@ -156,25 +143,5 @@ final class CloudLLMRefiner: LLMRefining {
                           userInfo: [NSLocalizedDescriptionKey: "Unexpected response shape: \(bodyStr.prefix(200))"])
         }
         return content
-    }
-
-    private static func stripQuotesAndCode(_ s: String) -> String {
-        var t = s
-        if t.hasPrefix("```") {
-            if let nl = t.firstIndex(of: "\n") {
-                t = String(t[t.index(after: nl)...])
-            }
-            if t.hasSuffix("```") {
-                t = String(t.dropLast(3))
-            }
-        }
-        // Strip surrounding straight / curly quotes
-        for pair in [("\"", "\""), ("“", "”"), ("「", "」"), ("『", "』")] {
-            if t.hasPrefix(pair.0) && t.hasSuffix(pair.1) && t.count > 1 {
-                t = String(t.dropFirst().dropLast())
-                break
-            }
-        }
-        return t
     }
 }
