@@ -982,58 +982,7 @@ private struct LLMTab: View {
                 .padding(.top, 2)
             }
 
-            localRefinerSection
-
-            SectionCard(title: "API") {
-                LabeledField(title: "API URL") {
-                    TextField("https://api.openai.com/v1/chat/completions", text: $baseURL)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                LabeledField(title: "API Key") {
-                    HStack(spacing: 6) {
-                        Group {
-                            if showAPIKey {
-                                TextField("sk-…", text: $apiKey)
-                            } else {
-                                SecureField("sk-…", text: $apiKey)
-                            }
-                        }
-                        .textFieldStyle(.roundedBorder)
-
-                        Button {
-                            showAPIKey.toggle()
-                        } label: {
-                            Image(systemName: showAPIKey ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.borderless)
-                        .help(showAPIKey ? "Hide API key" : "Show API key")
-
-                        Button {
-                            apiKey = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Clear API key")
-                        .disabled(apiKey.isEmpty)
-                    }
-                }
-
-                LabeledField(title: "Model") {
-                    TextField("gpt-4o-mini", text: $model)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                HStack {
-                    testStatusView
-                    Spacer()
-                    Button("Test") { runTest() }
-                        .disabled(!canTest || testStatus == .running)
-                    Button("Save") { save() }
-                        .keyboardShortcut(.return)
-                }
-            }
+            refinerBackendSection
         }
         .onAppear { loadCurrent() }
         // Auto-save on tab switch / window close so field edits aren't silently
@@ -1118,60 +1067,123 @@ private struct LLMTab: View {
         }
     }
 
-    // MARK: - v0.6.3 Local refiner UI
+    // MARK: - v0.6.3 Refiner backend UI
+    //
+    // Single SectionCard with a Cloud / Local picker (only on tier ≥ .mid)
+    // and content that swaps between cloud (URL/key/model/test) and local
+    // (status + warning) so only the relevant one is on screen. Replaces the
+    // earlier 2-card layout (Local refiner + API) which overflowed the
+    // 760×600 Settings window once both were visible.
+
+    private enum RefinerKind: Hashable { case cloud, local }
 
     @ViewBuilder
-    private var localRefinerSection: some View {
-        switch ramTier {
-        case .low:
-            // Hide the section entirely — not enough RAM. A single line in
-            // the Refinement card area would be noisy; instead leave it
-            // implicit. Settings doesn't currently expose RAM detection
-            // anywhere else, and the user has no actionable affordance.
-            EmptyView()
-        case .mid, .high:
-            SectionCard(title: "Local refiner (Qwen3.5-4B)") {
-                Toggle(isOn: localToggleBinding) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Use on-device MLX refiner")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(LG.text)
-                            .fx()
-                        Text("Refine without API key or network. Slower than cloud — first refine after long idle may take 5–30 s while macOS decompresses weights.")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(LG.textDim)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+    private var refinerBackendSection: some View {
+        SectionCard(title: "Refiner") {
+            if ramTier != .low {
+                Picker("", selection: backendBinding) {
+                    Text("Cloud").tag(RefinerKind.cloud)
+                    Text("Local").tag(RefinerKind.local)
                 }
-                .disabled(localDownloader.isActive)
-
-                if ramTier == .mid {
-                    Label("Will use ~2.6 GB RAM. May cause swapping on heavy multitasking.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .padding(.top, 2)
-                }
-
-                localStatusFooter
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.bottom, 4)
             }
-            .alert("Download Qwen3.5-4B (~2.6 GB)?",
-                   isPresented: $showDownloadConfirm) {
-                Button("Download") {
-                    state.localRefinerEnabled = true
-                    localDownloader.start()
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("Used for local refining. Saved to:\n\(ModelStore.localRefinerDirectory.path)")
-            }
-            .onChange(of: localDownloader.phase) { _, newPhase in
-                if case .succeeded = newPhase {
-                    localIsDownloaded = true
-                    localSizeOnDisk = ModelStore.localRefinerSizeOnDisk
-                }
+
+            // Defensive: if RAM tier is .low we never let local activate, so
+            // always render cloud content there even if state somehow says
+            // local (e.g., user copied UserDefaults from a higher-RAM Mac).
+            if state.localRefinerEnabled && ramTier != .low {
+                localBackendContent
+            } else {
+                cloudBackendContent
             }
         }
+        .alert("Download Qwen3.5-4B (~2.6 GB)?",
+               isPresented: $showDownloadConfirm) {
+            Button("Download") {
+                state.localRefinerEnabled = true
+                localDownloader.start()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Used for local refining. Saved to:\n\(ModelStore.localRefinerDirectory.path)")
+        }
+        .onChange(of: localDownloader.phase) { _, newPhase in
+            if case .succeeded = newPhase {
+                localIsDownloaded = true
+                localSizeOnDisk = ModelStore.localRefinerSizeOnDisk
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var cloudBackendContent: some View {
+        LabeledField(title: "API URL") {
+            TextField("https://api.openai.com/v1/chat/completions", text: $baseURL)
+                .textFieldStyle(.roundedBorder)
+        }
+
+        LabeledField(title: "API Key") {
+            HStack(spacing: 6) {
+                Group {
+                    if showAPIKey {
+                        TextField("sk-…", text: $apiKey)
+                    } else {
+                        SecureField("sk-…", text: $apiKey)
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+
+                Button {
+                    showAPIKey.toggle()
+                } label: {
+                    Image(systemName: showAPIKey ? "eye.slash" : "eye")
+                }
+                .buttonStyle(.borderless)
+                .help(showAPIKey ? "Hide API key" : "Show API key")
+
+                Button {
+                    apiKey = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .help("Clear API key")
+                .disabled(apiKey.isEmpty)
+            }
+        }
+
+        LabeledField(title: "Model") {
+            TextField("gpt-4o-mini", text: $model)
+                .textFieldStyle(.roundedBorder)
+        }
+
+        HStack {
+            testStatusView
+            Spacer()
+            Button("Test") { runTest() }
+                .disabled(!canTest || testStatus == .running)
+            Button("Save") { save() }
+                .keyboardShortcut(.return)
+        }
+    }
+
+    @ViewBuilder
+    private var localBackendContent: some View {
+        Text("Refines on-device with Qwen3.5-4B. No API key or network needed. First refine after long idle may take 5–30 s while macOS decompresses weights.")
+            .font(.system(size: 12.5, weight: .medium))
+            .foregroundStyle(LG.textDim)
+            .fixedSize(horizontal: false, vertical: true)
+
+        if ramTier == .mid {
+            Label("Will use ~2.6 GB RAM. May cause swapping on heavy multitasking.",
+                  systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+
+        localStatusFooter
     }
 
     @ViewBuilder
@@ -1214,30 +1226,28 @@ private struct LLMTab: View {
                     Spacer()
                     Button("Remove") { removeLocalModel() }
                         .controlSize(.small)
-                        .disabled(state.localRefinerEnabled)
-                        .help(state.localRefinerEnabled
-                              ? "Turn off the toggle first"
-                              : "Delete weights from disk")
                 }
                 .padding(.top, 4)
             }
         }
     }
 
-    private var localToggleBinding: Binding<Bool> {
+    private var backendBinding: Binding<RefinerKind> {
         Binding(
-            get: { state.localRefinerEnabled },
+            get: { state.localRefinerEnabled ? .local : .cloud },
             set: { newValue in
-                if newValue {
+                switch newValue {
+                case .cloud:
+                    state.localRefinerEnabled = false
+                case .local:
                     if localIsDownloaded {
                         state.localRefinerEnabled = true
                     } else {
+                        // Defer the actual flip to the alert's Download
+                        // handler. Picker visibly snaps back to Cloud
+                        // until user confirms (no half-state).
                         showDownloadConfirm = true
-                        // Toggle visually returns to off while user decides.
-                        // If they confirm, alert handler sets it back to on.
                     }
-                } else {
-                    state.localRefinerEnabled = false
                 }
             }
         )
@@ -1253,6 +1263,9 @@ private struct LLMTab: View {
 
     private func removeLocalModel() {
         do {
+            // Switching the picker back to Cloud first ensures the active
+            // refiner doesn't try to load weights we're about to delete.
+            state.localRefinerEnabled = false
             try ModelStore.deleteLocalRefiner()
             localIsDownloaded = false
             localSizeOnDisk = 0
