@@ -205,6 +205,125 @@ enum ModelStore {
         return .max
     }
 
+    // MARK: - v0.6.3 local MLX refiner (Qwen3.5-4B-MLX-4bit)
+    //
+    // Direct standalone methods rather than extending `ASRBackend` enum —
+    // the local refiner isn't an ASR backend and shouldn't pollute that
+    // type's switch statements / Settings UI dispatch. If a second local
+    // refiner ever lands (e.g. Gemma alternative) we'll introduce a parallel
+    // `RefinerBackend` enum then. YAGNI for now: one model, direct paths.
+
+    /// HuggingFace repo ID for the v0.6.3 local refiner. Single source of
+    /// truth — used by `localRefinerDirectory` for the on-disk path and by
+    /// `LocalMLXRefiner` (#R6) when handing the id to mlx-swift-lm.
+    static let localRefinerModelId = "mlx-community/Qwen3.5-4B-MLX-4bit"
+
+    /// `~/Library/Application Support/VoiceTyping/models/local-refiner/<modelId>/`.
+    /// Created on access. Sits parallel to ASR backend dirs; the `local-refiner`
+    /// segment isolates it so existing ASR `delete`/`size` code can't accidentally
+    /// see it.
+    static var localRefinerDirectory: URL {
+        let url = modelsURL
+            .appendingPathComponent("local-refiner", isDirectory: true)
+            .appendingPathComponent(localRefinerModelId, isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    /// Strict "is the local refiner ready to load?" check, mirroring the
+    /// `isComplete` style used for ASR backends. Verifies config + tokenizer
+    /// + weights all exist and pass conservative size thresholds.
+    static func isLocalRefinerComplete() -> Bool {
+        return isLocalRefinerComplete(atDirectory: localRefinerDirectory)
+    }
+
+    /// Testable variant — same logic but takes the model dir directly so unit
+    /// tests can stage fake layouts under a temp dir.
+    static func isLocalRefinerComplete(atDirectory dir: URL) -> Bool {
+        let fm = FileManager.default
+        // 1. Model config — mlx-swift-lm needs this to pick the architecture
+        //    (Qwen35Model vs Qwen35MoEModel etc). Tiny but mandatory.
+        let config = dir.appendingPathComponent("config.json")
+        guard fm.fileExists(atPath: config.path),
+              let csz = fileSize(at: config), csz >= 1_000 else { return false }
+        // 2. Tokenizer — `tokenizer.json` is the consolidated form
+        //    swift-transformers reads. `tokenizer_config.json` carries the
+        //    chat template + the `enable_thinking` Jinja branch we depend on.
+        let tokenizer = dir.appendingPathComponent("tokenizer.json")
+        guard fm.fileExists(atPath: tokenizer.path),
+              let tsz = fileSize(at: tokenizer), tsz >= 100_000 else { return false }
+        let tokenizerCfg = dir.appendingPathComponent("tokenizer_config.json")
+        guard fm.fileExists(atPath: tokenizerCfg.path),
+              let tcsz = fileSize(at: tokenizerCfg), tcsz >= 1_000 else { return false }
+        // 3. Weights — Qwen3.5-4B-MLX-4bit ships as a single ~3 GB
+        //    `model.safetensors`. Larger same-family variants ship sharded
+        //    (`model-00001-of-00007.safetensors` + an index json). Handle both
+        //    so the same logic works if we add a 7B/27B option later.
+        let singleSafetensors = dir.appendingPathComponent("model.safetensors")
+        if fm.fileExists(atPath: singleSafetensors.path),
+           let sz = fileSize(at: singleSafetensors), sz >= 100_000_000 {
+            return true   // single-file path — done
+        }
+        // Sharded path: `model.safetensors.index.json` lists each shard via
+        // its `weight_map`. Verify every referenced shard exists with size.
+        let indexFile = dir.appendingPathComponent("model.safetensors.index.json")
+        guard fm.fileExists(atPath: indexFile.path),
+              let indexData = try? Data(contentsOf: indexFile),
+              let json = try? JSONSerialization.jsonObject(with: indexData) as? [String: Any],
+              let weightMap = json["weight_map"] as? [String: String] else {
+            return false
+        }
+        let shardNames = Set(weightMap.values)
+        guard !shardNames.isEmpty else { return false }
+        for shardName in shardNames {
+            let shard = dir.appendingPathComponent(shardName)
+            guard fm.fileExists(atPath: shard.path),
+                  let ssz = fileSize(at: shard), ssz >= 1_000_000 else { return false }
+        }
+        return true
+    }
+
+    /// Removes the local refiner dir if it's incomplete. Settings UI calls
+    /// this before showing the toggle as "ready" so a partial download from
+    /// a killed prior session doesn't trip mlx-swift-lm's loader.
+    @discardableResult
+    static func repairLocalRefinerIfIncomplete() -> Bool {
+        return repairLocalRefinerIfIncomplete(atDirectory: localRefinerDirectory)
+    }
+
+    @discardableResult
+    static func repairLocalRefinerIfIncomplete(atDirectory dir: URL) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir.path) else { return false }
+        guard !isLocalRefinerComplete(atDirectory: dir) else { return false }
+        do {
+            try fm.removeItem(at: dir)
+            Log.app.info("ModelStore: removed incomplete local refiner — will re-download")
+            return true
+        } catch {
+            Log.app.error("ModelStore: failed to remove incomplete local refiner: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    /// Sum of file sizes under the local refiner dir. 0 if nothing downloaded.
+    static var localRefinerSizeOnDisk: Int64 {
+        return directorySize(at: localRefinerDirectory)
+    }
+
+    /// Delete all local refiner weights — used by Settings → Remove model.
+    /// Mirrors `delete(_:)` for ASR backends: removes contents, leaves the
+    /// dir intact so re-download has a place to write.
+    static func deleteLocalRefiner() throws {
+        let dir = localRefinerDirectory
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir.path) else { return }
+        let contents = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        for url in contents {
+            try fm.removeItem(at: url)
+        }
+    }
+
     // MARK: - Migration
 
     /// v0.1.0 passed `~/Library/Application Support/VoiceTyping/models/` to WhisperKit

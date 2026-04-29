@@ -143,4 +143,129 @@ final class ModelStoreTests: XCTestCase {
         let data = Data(repeating: 0, count: bytes)
         try data.write(to: url)
     }
+
+    // MARK: - v0.6.3 #R5 Local refiner tests
+    //
+    // Layout matches HuggingFace `mlx-community/Qwen3.5-4B-MLX-4bit`:
+    //   config.json
+    //   tokenizer.json
+    //   tokenizer_config.json
+    //   model.safetensors                   (single-file, ~3 GB real)
+    //   model.safetensors.index.json        (single-file: also present, just an index)
+    //
+    // Sharded variant (hypothetical larger same-family model) — same first
+    // three files, but no `model.safetensors`, instead:
+    //   model-00001-of-00007.safetensors
+    //   ...
+    //   model.safetensors.index.json    (weight_map points to shards)
+
+    func testIsLocalRefinerComplete_SingleFile_AllAboveThreshold_ReturnsTrue() throws {
+        try seedLocalRefinerSingleFile(weightsBytes: 200_000_000)
+        XCTAssertTrue(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_MissingConfig_ReturnsFalse() throws {
+        try seedLocalRefinerSingleFile(weightsBytes: 200_000_000)
+        try FileManager.default.removeItem(at: tempBase.appendingPathComponent("config.json"))
+        XCTAssertFalse(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_MissingTokenizer_ReturnsFalse() throws {
+        try seedLocalRefinerSingleFile(weightsBytes: 200_000_000)
+        try FileManager.default.removeItem(at: tempBase.appendingPathComponent("tokenizer.json"))
+        XCTAssertFalse(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_MissingTokenizerConfig_ReturnsFalse() throws {
+        try seedLocalRefinerSingleFile(weightsBytes: 200_000_000)
+        try FileManager.default.removeItem(at: tempBase.appendingPathComponent("tokenizer_config.json"))
+        XCTAssertFalse(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_TruncatedSingleSafetensors_FallsBackToShardedAndFails() throws {
+        // 50 MB single file — below the 100 MB threshold for the single-file
+        // path. We then check the sharded path, which won't find shards.
+        try seedLocalRefinerSingleFile(weightsBytes: 50_000_000)
+        XCTAssertFalse(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_MissingWeights_ReturnsFalse() throws {
+        try seedLocalRefinerSingleFile(weightsBytes: 200_000_000)
+        try FileManager.default.removeItem(at: tempBase.appendingPathComponent("model.safetensors"))
+        // Index json without shards or single file → invalid
+        XCTAssertFalse(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_ShardedLayout_AllShardsPresent_ReturnsTrue() throws {
+        try seedLocalRefinerSharded(shardCount: 3, perShardBytes: 2_000_000)
+        XCTAssertTrue(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_ShardedLayout_MissingShard_ReturnsFalse() throws {
+        try seedLocalRefinerSharded(shardCount: 3, perShardBytes: 2_000_000)
+        try FileManager.default.removeItem(
+            at: tempBase.appendingPathComponent("model-00002-of-00003.safetensors")
+        )
+        XCTAssertFalse(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_ShardedLayout_TruncatedShard_ReturnsFalse() throws {
+        try seedLocalRefinerSharded(shardCount: 2, perShardBytes: 100)   // <1 MB threshold
+        XCTAssertFalse(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testIsLocalRefinerComplete_EmptyDir_ReturnsFalse() {
+        XCTAssertFalse(ModelStore.isLocalRefinerComplete(atDirectory: tempBase))
+    }
+
+    func testRepairLocalRefiner_RemovesIncompleteDir() throws {
+        try seedLocalRefinerSingleFile(weightsBytes: 50_000_000)   // truncated
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempBase.path))
+        let repaired = ModelStore.repairLocalRefinerIfIncomplete(atDirectory: tempBase)
+        XCTAssertTrue(repaired)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tempBase.path))
+    }
+
+    func testRepairLocalRefiner_NoOp_WhenComplete() throws {
+        try seedLocalRefinerSingleFile(weightsBytes: 200_000_000)
+        let repaired = ModelStore.repairLocalRefinerIfIncomplete(atDirectory: tempBase)
+        XCTAssertFalse(repaired)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempBase.path))
+    }
+
+    func testRepairLocalRefiner_NoOp_WhenAbsent() {
+        let nonexistent = tempBase.appendingPathComponent("does-not-exist", isDirectory: true)
+        let repaired = ModelStore.repairLocalRefinerIfIncomplete(atDirectory: nonexistent)
+        XCTAssertFalse(repaired)
+    }
+
+    // MARK: - Local refiner helpers
+
+    private func seedLocalRefinerSingleFile(weightsBytes: Int) throws {
+        try writeStub(at: tempBase.appendingPathComponent("config.json"), bytes: 5_000)
+        try writeStub(at: tempBase.appendingPathComponent("tokenizer.json"), bytes: 200_000)
+        try writeStub(at: tempBase.appendingPathComponent("tokenizer_config.json"), bytes: 5_000)
+        try writeStub(at: tempBase.appendingPathComponent("model.safetensors"), bytes: weightsBytes)
+        // index.json is optional in real layout when single-file but ships in
+        // both forms — include a minimal stub for realism.
+        try writeStub(at: tempBase.appendingPathComponent("model.safetensors.index.json"), bytes: 100)
+    }
+
+    private func seedLocalRefinerSharded(shardCount: Int, perShardBytes: Int) throws {
+        try writeStub(at: tempBase.appendingPathComponent("config.json"), bytes: 5_000)
+        try writeStub(at: tempBase.appendingPathComponent("tokenizer.json"), bytes: 200_000)
+        try writeStub(at: tempBase.appendingPathComponent("tokenizer_config.json"), bytes: 5_000)
+        // Build a real `model.safetensors.index.json` with a `weight_map`
+        // pointing to each shard. Shard names match HuggingFace convention.
+        var weightMap: [String: String] = [:]
+        for i in 1...shardCount {
+            let shardName = String(format: "model-%05d-of-%05d.safetensors", i, shardCount)
+            // Map a synthetic tensor name per shard so isComplete sees them all.
+            weightMap["tensor.\(i)"] = shardName
+            try writeStub(at: tempBase.appendingPathComponent(shardName), bytes: perShardBytes)
+        }
+        let index: [String: Any] = ["weight_map": weightMap]
+        let indexData = try JSONSerialization.data(withJSONObject: index)
+        try indexData.write(to: tempBase.appendingPathComponent("model.safetensors.index.json"))
+    }
 }
