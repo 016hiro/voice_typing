@@ -1094,9 +1094,9 @@ private struct LLMTab: View {
         cfg.baseURL = baseURL
         cfg.apiKey  = apiKey
         cfg.model   = model
-        let refiner = LLMRefiner()
+        let refiner = CloudLLMRefiner(config: cfg)
         Task {
-            let result = await refiner.test(config: cfg)
+            let result = await refiner.test()
             await MainActor.run {
                 switch result {
                 case .ok(let reply):

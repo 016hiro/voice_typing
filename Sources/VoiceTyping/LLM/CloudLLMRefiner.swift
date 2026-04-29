@@ -1,11 +1,15 @@
 import Foundation
 
-/// Stateless OpenAI-compatible chat client; safe to share across actors.
-final class LLMRefiner: Sendable {
+/// HTTP-backed `LLMRefining` — speaks the OpenAI-compatible Chat Completions
+/// API. Stateless beyond its injected `LLMConfig`; safe to share across actors
+/// and cheap enough to recreate per-call (AppDelegate uses a computed property
+/// that snapshots `state.llmConfig` on each access).
+final class CloudLLMRefiner: LLMRefining {
 
-    enum TestResult {
-        case ok(sampleReply: String)
-        case failed(String)
+    private let config: LLMConfig
+
+    init(config: LLMConfig) {
+        self.config = config
     }
 
     /// Refines `text` using the given `mode`. Optional `glossary` is a pre-formatted
@@ -19,9 +23,8 @@ final class LLMRefiner: Sendable {
     func refine(_ text: String,
                 language: Language,
                 mode: RefineMode,
-                glossary: String? = nil,
-                profileSnippet: String? = nil,
-                config: LLMConfig) async -> String {
+                glossary: String?,
+                profileSnippet: String?) async -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
         guard let systemPrompt = mode.systemPrompt else { return text }    // .off
@@ -36,8 +39,7 @@ final class LLMRefiner: Sendable {
         do {
             let reply = try await chat(
                 system: finalSystem,
-                user: trimmed,
-                config: config
+                user: trimmed
             )
             let cleaned = Self.stripQuotesAndCode(reply).trimmingCharacters(in: .whitespacesAndNewlines)
             Log.llm.info("Refined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars")
@@ -63,13 +65,12 @@ final class LLMRefiner: Sendable {
     }
 
     /// Sends a tiny test message to confirm credentials work.
-    func test(config: LLMConfig) async -> TestResult {
+    func test() async -> LLMRefiningTestResult {
         guard config.hasCredentials else { return .failed("Configuration incomplete") }
         do {
             let reply = try await chat(
                 system: "You are a test responder. Reply with 'ok'.",
-                user: "ping",
-                config: config
+                user: "ping"
             )
             return .ok(sampleReply: reply)
         } catch {
@@ -79,7 +80,7 @@ final class LLMRefiner: Sendable {
 
     // MARK: - HTTP
 
-    private func chat(system: String, user: String, config: LLMConfig) async throws -> String {
+    private func chat(system: String, user: String) async throws -> String {
         // Literal pass-through: whatever the user typed in the URL field IS the
         // POST target. No suffix-appending, no auto-stripping. Only defense is
         // trimming whitespace/newlines — pasted keys / URLs often carry a `\n`,

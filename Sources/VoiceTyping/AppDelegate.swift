@@ -8,8 +8,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let state = AppState()
     let audio = AudioCapture()
     let injector = TextInjector()
-    let refiner = LLMRefiner()
     let fnMonitor = FnHotkeyMonitor()
+
+    /// Refiner snapshot — read fresh per-call so Settings updates to
+    /// `state.llmConfig` take effect on the very next refine without any
+    /// pub/sub plumbing. `CloudLLMRefiner` is cheap to allocate (no loaded
+    /// weights, no persistent connections — `URLSessionConfiguration.ephemeral`
+    /// is rebuilt per chat call). When the v0.6.3 #R6 local refiner lands,
+    /// this property will switch on `state.refinerBackend` and return either
+    /// the cheap cloud snapshot or the persistent local instance.
+    var refiner: any LLMRefining {
+        CloudLLMRefiner(config: state.llmConfig)
+    }
 
     // v0.6.0: Sparkle 2 auto-update. `startingUpdater: true` triggers the
     // first background check shortly after launch and then runs Sparkle's
@@ -879,8 +889,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 language: language,
                 mode: mode,
                 glossary: glossary,
-                profileSnippet: profileSnippet,
-                config: llmConfig
+                profileSnippet: profileSnippet
             )
             tracker.mark(.llmEnd)
             finalText = refined
@@ -937,8 +946,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             language: language,
             mode: mode,
             glossary: glossary,
-            profileSnippet: profileSnippet,
-            config: llmConfig
+            profileSnippet: profileSnippet
         )
         tracker.mark(.llmEnd)
 
