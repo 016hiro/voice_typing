@@ -100,6 +100,58 @@ final class DebugCaptureWriterTests: XCTestCase {
                        "ISO8601 timestamps must retain timezone marker")
     }
 
+    // MARK: - v0.6.3 dogfood Bug A: queue closures must outlive writer ref
+
+    func testFinalize_AfterWriterRefDropped_StillWritesAudioAndMeta() throws {
+        // Regression for the "all sessions only have meta.json + segments.jsonl"
+        // bug seen during v0.6.3 R8 dogfood. Pre-fix code captured `[weak self]`
+        // on every queue.async closure; in production the writer is only held by
+        // a `let captureWriter = currentDebugWriter` local in pipelineTask, and
+        // finalize is the LAST thing enqueued before that Task ends + drops the
+        // local. Race: Task ends → captureWriter dies → writer dies → queue's
+        // weak self is nil → finalize's `guard let self else { return }` silently
+        // drops audio.wav + endedAt write. This test reproduces by enclosing the
+        // writer in a do-block scope so the strong ref is gone when we check.
+        let folder = tempRoot.appendingPathComponent("session-bugA", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let meta = DebugCaptureWriter.Meta(
+            sessionId: "bugA0001", appVersion: "test", startedAt: Date(), endedAt: nil,
+            backend: "qwen", language: "zh", liveMode: false, frontmostBundleID: nil,
+            profileSnippet: nil, asrContextChars: 0,
+            totalAudioSec: nil, totalSegments: nil, totalInjections: nil, totalRefines: nil
+        )
+        let audio = AudioBuffer(samples: [Float](repeating: 0, count: 16_000), sampleRate: 16_000)
+
+        do {
+            let writer = DebugCaptureWriter(folder: folder, meta: meta)
+            writer.finalize(audio: audio)
+            // Scope ends → writer's only strong ref drops here. Pre-fix: the
+            // queue closure's weak self was nil by the time it ran, so finalize
+            // never wrote audio.wav. Post-fix: closure strong-captures self so
+            // the writer stays alive until the queue drains.
+        }
+
+        // No writer reference → can't call waitUntilIdleForTesting. Poll the
+        // filesystem until both audio.wav and a finalized meta appear, or 2 s
+        // elapses (ample for a single utility-qos closure).
+        let metaURL = folder.appendingPathComponent("meta.json")
+        let audioURL = folder.appendingPathComponent("audio.wav")
+        let deadline = Date().addingTimeInterval(2.0)
+        var sawFinalized = false
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: metaURL),
+               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               dict["endedAt"] != nil,
+               FileManager.default.fileExists(atPath: audioURL.path) {
+                sawFinalized = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertTrue(sawFinalized,
+                      "finalize must complete after writer ref is dropped (Bug A regression)")
+    }
+
     // MARK: - v0.6.3 #R8: refine I/O capture
 
     func testAppendRefine_WritesJSONLAndUpdatesMetaTotal() throws {

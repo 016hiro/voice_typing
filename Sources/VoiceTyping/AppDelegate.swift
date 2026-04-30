@@ -813,7 +813,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     backend: backend,
                     bundleID: frontmostBundleID,
                     profileSnippet: profileSnippet,
-                    tracker: tracker
+                    tracker: tracker,
+                    captureWriter: captureWriter
                 )
             } else {
                 await self.injectWaitingForRefine(
@@ -825,7 +826,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     llmConfig: llmConfig,
                     backend: backend,
                     profileSnippet: profileSnippet,
-                    tracker: tracker
+                    tracker: tracker,
+                    captureWriter: captureWriter
                 )
             }
             let injMs = Int(Date().timeIntervalSince(injStart) * 1000)
@@ -882,7 +884,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         llmConfig: LLMConfig,
         backend: ASRBackend,
         profileSnippet: String?,
-        tracker: LatencyTracker
+        tracker: LatencyTracker,
+        captureWriter: DebugCaptureWriter?
     ) async {
         var finalText = raw
         if willRefine {
@@ -891,11 +894,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
             // v0.6.3 #R8: capture refine I/O for offline cloud↔local A/B.
-            // Snapshot the backend label and writer reference before await
-            // so the record reflects the refiner that was actually invoked
-            // (state.localRefinerEnabled could flip mid-await, though sub-
-            // second windows make this near-impossible in practice).
-            let refineCaptureWriter = self.currentDebugWriter
+            // Backend label snapshotted from MainActor before await so a
+            // mid-call Settings flip can't mislabel the record. The writer
+            // is the *local* one threaded in from pipelineTask — reading
+            // `self.currentDebugWriter` here would always see nil because
+            // stopRecording nils that field at line 653 before the async
+            // pipeline runs.
             let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }
             let refineStarted = Date()
             tracker.mark(.llmStart)
@@ -907,7 +911,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 profileSnippet: profileSnippet
             )
             tracker.mark(.llmEnd)
-            refineCaptureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
+            captureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
                 timestamp: refineStarted,
                 input: raw,
                 output: refined,
@@ -952,7 +956,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backend: ASRBackend,
         bundleID: String?,
         profileSnippet: String?,
-        tracker: LatencyTracker
+        tracker: LatencyTracker,
+        captureWriter: DebugCaptureWriter?
     ) async {
         // Step 1: paste raw immediately.
         tracker.mark(.injectStart)
@@ -968,8 +973,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
         // v0.6.3 #R8: capture refine I/O. Same snapshot pattern as the
         // post-record path above — backend label captured before await so
-        // mid-flight Settings flips don't mislabel the record.
-        let refineCaptureWriter = self.currentDebugWriter
+        // mid-flight Settings flips don't mislabel the record. The writer
+        // is the *local* one threaded in from pipelineTask (see comment in
+        // injectWaitingForRefine for why `self.currentDebugWriter` doesn't
+        // work here).
         let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }
         let refineStarted = Date()
         tracker.mark(.llmStart)
@@ -981,7 +988,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             profileSnippet: profileSnippet
         )
         tracker.mark(.llmEnd)
-        refineCaptureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
+        captureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
             timestamp: refineStarted,
             input: raw,
             output: refined,

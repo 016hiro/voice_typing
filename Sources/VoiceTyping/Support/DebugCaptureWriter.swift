@@ -162,24 +162,35 @@ final class DebugCaptureWriter: @unchecked Sendable {
         // was only written from finalize/abort, so any crash / force-quit /
         // early bail left the session dir without metadata (12% of dogfood
         // sessions had usable meta in v0.5.2).
-        queue.async { [weak self] in
-            self?.writeMeta()
+        //
+        // v0.6.3 fix (#R8 dogfood): closures used to capture `[weak self]`,
+        // which silently dropped writes whenever the writer's only strong
+        // reference (the `captureWriter` local in pipelineTask) was released
+        // before the queue scheduled the work. That race always lost for the
+        // last enqueued operations — finalize() and the appendInjection just
+        // before it — explaining why ~every dogfood session on disk had only
+        // meta.json + segments.jsonl, never audio.wav or full meta. Now each
+        // closure strong-captures self so the writer survives until the
+        // queue drains. No retain cycle: each closure releases self when it
+        // completes, and the queue itself is owned by self for its full life.
+        queue.async {
+            self.writeMeta()
         }
     }
 
     // MARK: - Append API
 
     func appendSegment(_ rec: SegmentRecord) {
-        queue.async { [weak self] in
-            guard let self, !self.finalized else { return }
+        queue.async {
+            guard !self.finalized else { return }
             self.segmentCount += 1
             self.appendJSONL(rec, file: self.folder.appendingPathComponent("segments.jsonl"))
         }
     }
 
     func appendInjection(_ rec: InjectionRecord) {
-        queue.async { [weak self] in
-            guard let self, !self.finalized else { return }
+        queue.async {
+            guard !self.finalized else { return }
             self.injectionCount += 1
             self.appendJSONL(rec, file: self.folder.appendingPathComponent("injections.jsonl"))
         }
@@ -191,8 +202,8 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// (callers skip recording on the .off / empty-input early-returns inside
     /// `LLMRefining` implementations).
     func appendRefine(_ rec: RefineRecord) {
-        queue.async { [weak self] in
-            guard let self, !self.finalized else { return }
+        queue.async {
+            guard !self.finalized else { return }
             self.refineCount += 1
             self.appendJSONL(rec, file: self.folder.appendingPathComponent("refines.jsonl"))
         }
@@ -202,8 +213,8 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// from the queue's perspective (other appends already enqueued before
     /// `finalize` will land first; appends enqueued after will be dropped).
     func finalize(audio: AudioBuffer) {
-        queue.async { [weak self] in
-            guard let self, !self.finalized else { return }
+        queue.async {
+            guard !self.finalized else { return }
             self.finalized = true
             // Audio first — it's the largest file; if disk is full we want
             // meta.json to still reflect what was attempted.
@@ -227,8 +238,8 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// the partial session dir is left on disk so the user can inspect it.
     /// Used when stopRecording bails early (e.g. buffer too short).
     func abort() {
-        queue.async { [weak self] in
-            guard let self, !self.finalized else { return }
+        queue.async {
+            guard !self.finalized else { return }
             self.finalized = true
             self.meta.endedAt = Date()
             self.meta.totalSegments = self.segmentCount
