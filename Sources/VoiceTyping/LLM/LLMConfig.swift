@@ -61,14 +61,21 @@ enum LLMConfigStore {
     @MainActor static private(set) var migrationFailure: String?
 
     static func load() -> LLMConfig {
-        guard let data = UserDefaults.standard.data(forKey: key),
+        var cfg = loadCore(defaults: .standard)
+        // Keychain read kept out of `loadCore` so unit tests can exercise the
+        // schema migrations against an isolated UserDefaults without touching
+        // the developer's real Keychain.
+        cfg.apiKey = KeychainStore.readAPIKey() ?? ""
+        return cfg
+    }
+
+    /// Decoder + migration pipeline, parameterized over `UserDefaults` so
+    /// `LLMConfigStoreTests` can drive each migration branch from an
+    /// isolated suite. Production callers should use `load()`.
+    static func loadCore(defaults: UserDefaults) -> LLMConfig {
+        guard let data = defaults.data(forKey: key),
               var cfg = try? JSONDecoder().decode(LLMConfig.self, from: data) else {
-            // No config on disk. Still check Keychain — a user who re-ran
-            // migration clears UserDefaults first, so the key may live
-            // alone in Keychain when struct fields are all defaults.
-            var fresh = LLMConfig.default
-            fresh.apiKey = KeychainStore.readAPIKey() ?? ""
-            return fresh
+            return LLMConfig.default
         }
         // v0.3.2 schema change: pre-v0.3.2 stored a "base URL" (e.g. `.../v1`)
         // and the refiner appended `/chat/completions`. v0.3.2 stores the full
@@ -87,7 +94,6 @@ enum LLMConfigStore {
         if cfg.timeout < 30 {
             cfg.timeout = LLMConfig.default.timeout
         }
-        cfg.apiKey = KeychainStore.readAPIKey() ?? ""
         return cfg
     }
 
