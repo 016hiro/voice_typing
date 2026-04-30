@@ -39,7 +39,11 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
 /// shadow has transparent space to spread into.
 private enum Panel {
     static let width: CGFloat = 760
-    static let height: CGFloat = 600
+    /// Sized so the worst-case tab body (LLM tab, Cloud refiner branch,
+    /// ~500pt of content) clears the available area with ≥40pt buffer per
+    /// the CLAUDE.md "Settings UI 改动规则" thresholds. If you add controls
+    /// to any tab, recompute and bump this rather than shrinking content.
+    static let height: CGFloat = 700
     static let cornerRadius: CGFloat = 28
     /// Transparent space around the panel for the soft shadow. Keep this
     /// larger than the panel shadow's blur + offset; if it's too tight the
@@ -723,12 +727,11 @@ private struct ModelsTab: View {
     var body: some View {
         VStack(spacing: 14) {
             // v0.5.2: dropped the "Speech Recognition Model" title + the
-            // "Downloads cached under …" footer so the Models tab still fits
-            // in the fixed 600px panel after the Transcription timing
-            // SectionCard expanded. The 3 ModelRows self-name (Whisper /
-            // Qwen 0.6B / Qwen 1.7B) so the title is informational
-            // overhead; the cache path is documented in `docs/runbook.md`
-            // and reachable via Manage Models.
+            // "Downloads cached under …" footer to keep the Models tab
+            // compact after the Transcription timing SectionCard expanded.
+            // The 3 ModelRows self-name (Whisper / Qwen 0.6B / Qwen 1.7B)
+            // so the title is informational overhead; the cache path is
+            // documented in `docs/runbook.md` and reachable via Manage Models.
             SectionCard {
                 VStack(spacing: 0) {
                     ForEach(ASRBackend.allCases) { backend in
@@ -762,7 +765,7 @@ private struct ModelsTab: View {
             }
 
             // v0.5.3 hands-free toggle. Inline (no SectionCard chrome) to
-            // fit the 600 px panel — the section above already grew the
+            // keep the tab compact — the section above already grew the
             // tab vertically. Disabled when the active backend is non-Qwen
             // because hands-free needs the VAD pump that only the Qwen
             // streaming path provides today.
