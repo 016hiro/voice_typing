@@ -6,6 +6,28 @@
 
 _（下个版本的用户可见变更在此累积）_
 
+## v0.6.3 — 2026-05-01
+
+### Added
+- **本地 LLM refiner**：Settings → LLM 多了 "Refiner" 段，可在 Cloud / Local 之间切换。Local 用 `mlx-community/Qwen3.5-4B-MLX-4bit`（~2.6 GB，首次启用时下载），完全离线，不需 API key，不出网。按 Mac 内存分层暴露：
+  - **8 GB**：不显示 Local 入口（避免 swap）
+  - **16-23 GB**：可开，显示 ⚠ "可能 swap on heavy multitasking" 警告
+  - **24 GB+**：可开，无警告（默认仍 OFF；先 dogfood 收数据再考虑改默认）
+- **Cloud refine 改流式（SSE）**：解决了某些云端 API（特别是 OpenRouter 路由的 reasoning 模型如 o1/r1/:thinking）非流式下 100% 超时的问题。心跳保活 + 部分内容渐进返回
+- **Settings → Advanced → 调试采集** 现在也记录 LLM refine 的输入/输出/延迟（落到 `~/Library/Application Support/VoiceTyping/debug-captures/<session>/refines.jsonl`），方便用户/我自己 A/B 比较 cloud vs local 质量
+
+### Fixed
+- **调试采集长期数据丢失（潜伏 5 个版本）**：v0.5.1 起的 silent bug，`DebugCaptureWriter` 在 Task 结束时 race，所有 dogfood session 的 `audio.wav` 和完整 `meta.json`（含 `endedAt` / 总数）都没写盘，只剩 `meta.json` 局部 + `segments.jsonl`。开启过调试采集的用户，**新版本起所有数据完整**。历史数据不可恢复
+- **Cloud refine 默认超时 8s → 60s**（reasoning 模型自动 90s）；老用户从 UserDefaults 读到 < 30s 的旧值会自动 bump 到新默认。修了 "in-app Test 通过但实际 refine 永远超时" 的混淆体验
+- **Cloud refine 错误信息更人话**：408/429/524/529 现在会显示 "API edge timeout" / "Rate limited" / "Upstream provider timed out" / "Upstream provider overloaded"，不再统一吐 `NSURLErrorDomain Code=-1001`
+- **Settings 面板高度 600 → 700**：之前 LLM tab Cloud 模式会顶到面板上下边距外。同时窗口尺寸调整规则进 `CLAUDE.md` 防再犯
+
+### Notes
+- 升级安装包不会重下任何模型；本地 refiner 模型按需在 Settings 里点 "Download" 下
+- 中国用户走 hf-mirror（v0.6.1 已有），下载本地 refiner ~10 分钟
+- v0.7.0 计划做 "流式 refine UX"（用户实际看到字逐渐出现）+ Live × Refine Cmd+Z 链
+- 完整开发记录：[`docs/devlog/v0.6.3.md`](docs/devlog/v0.6.3.md)
+
 ## v0.6.1 — 2026-04-26
 
 ### Added
