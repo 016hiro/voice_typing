@@ -890,6 +890,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.state.status = .refining
             }
             let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
+            // v0.6.3 #R8: capture refine I/O for offline cloud↔local A/B.
+            // Snapshot the backend label and writer reference before await
+            // so the record reflects the refiner that was actually invoked
+            // (state.localRefinerEnabled could flip mid-await, though sub-
+            // second windows make this near-impossible in practice).
+            let refineCaptureWriter = self.currentDebugWriter
+            let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }
+            let refineStarted = Date()
             tracker.mark(.llmStart)
             let refined = await self.refiner.refine(
                 raw,
@@ -899,6 +907,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 profileSnippet: profileSnippet
             )
             tracker.mark(.llmEnd)
+            refineCaptureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
+                timestamp: refineStarted,
+                input: raw,
+                output: refined,
+                mode: mode.rawValue,
+                backend: refineCaptureBackend,
+                latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
+                glossary: glossary,
+                profileSnippet: profileSnippet,
+                rawFirst: false
+            ))
             finalText = refined
 
             let llmHits = GlossaryBuilder.matchedEntryIDs(in: refined, entries: dictEntries)
@@ -947,6 +966,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Step 2: refine in the background.
         let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
+        // v0.6.3 #R8: capture refine I/O. Same snapshot pattern as the
+        // post-record path above — backend label captured before await so
+        // mid-flight Settings flips don't mislabel the record.
+        let refineCaptureWriter = self.currentDebugWriter
+        let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }
+        let refineStarted = Date()
         tracker.mark(.llmStart)
         let refined = await self.refiner.refine(
             raw,
@@ -956,6 +981,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             profileSnippet: profileSnippet
         )
         tracker.mark(.llmEnd)
+        refineCaptureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
+            timestamp: refineStarted,
+            input: raw,
+            output: refined,
+            mode: mode.rawValue,
+            backend: refineCaptureBackend,
+            latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
+            glossary: glossary,
+            profileSnippet: profileSnippet,
+            rawFirst: true
+        ))
 
         let trimmedRefined = refined.trimmingCharacters(in: .whitespacesAndNewlines)
 

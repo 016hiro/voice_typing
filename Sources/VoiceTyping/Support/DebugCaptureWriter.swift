@@ -5,7 +5,9 @@ import AVFoundation
 /// serializes session metadata + audio + per-segment transcripts + per-inject
 /// results to disk. Per `todo/v0.5.1.md` decisions:
 ///   - #1 audio captured by default (this writer always writes audio.wav)
-///   - #2 LLM refine I/O **NOT** captured (no `appendRefine` API)
+///   - #2 LLM refine I/O **was** punted in v0.5.1 — landed in v0.6.3 #R8 as
+///        `appendRefine` + `refines.jsonl` so cloud↔local refiner quality
+///        can be A/B'd offline (the local MLX refiner is the use case)
 ///   - #3 per-session subdirectory layout
 ///   - #6 covers VAD replay / backend compare / hallucination ± / load-time
 ///        / inject latency / focus-change drop
@@ -17,6 +19,7 @@ import AVFoundation
 ///   audio.wav         16 kHz mono Float32 — raw mic
 ///   segments.jsonl    one JSON per ASR segment (kept + filtered)
 ///   injections.jsonl  one JSON per inject attempt
+///   refines.jsonl     one JSON per refine call (v0.6.3+; absent if no refine ran)
 /// ```
 ///
 /// Concurrency: append methods are called from background tasks (LiveTranscriber
@@ -46,6 +49,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
         var totalAudioSec: Double?
         var totalSegments: Int?
         var totalInjections: Int?
+        var totalRefines: Int?       // v0.6.3 #R8 — populated by finalize/abort
     }
 
     struct SegmentRecord: Codable {
@@ -73,6 +77,23 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let elapsedMs: Int
     }
 
+    /// v0.6.3 #R8 — one record per `LLMRefining.refine(...)` call. Captured
+    /// **only when** debug capture is enabled AND the call actually ran (mode
+    /// `.off` / empty input early-returns are not recorded). Field set is
+    /// designed for the cloud↔local A/B analysis: identical input + glossary +
+    /// profile → compare `output` and `latencyMs` across `backend` values.
+    struct RefineRecord: Codable {
+        let timestamp: Date
+        let input: String              // the raw text fed into refine (post-ASR, post-hallucination-filter)
+        let output: String             // refiner's reply (or input if refine failed/no-op)
+        let mode: String               // RefineMode.rawValue: light/aggressive/conservative
+        let backend: String            // "cloud" or "local"
+        let latencyMs: Int             // wall-clock of the refine() await
+        let glossary: String?          // GlossaryBuilder.buildLLMGlossary output (nil if dictionary empty)
+        let profileSnippet: String?    // per-app override snippet (nil if none)
+        let rawFirst: Bool             // false = paste-after-refine; true = paste-then-refine flow
+    }
+
     // MARK: - Lifecycle
 
     let folder: URL
@@ -80,6 +101,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
     private var meta: Meta
     private var segmentCount = 0
     private var injectionCount = 0
+    private var refineCount = 0
     private var finalized = false
 
     /// Returns nil when `state.debugCaptureEnabled` is off — call sites can
@@ -122,7 +144,8 @@ final class DebugCaptureWriter: @unchecked Sendable {
             asrContextChars: asrContext?.count ?? 0,
             totalAudioSec: nil,
             totalSegments: nil,
-            totalInjections: nil
+            totalInjections: nil,
+            totalRefines: nil
         )
         return DebugCaptureWriter(folder: folder, meta: meta)
     }
@@ -162,6 +185,19 @@ final class DebugCaptureWriter: @unchecked Sendable {
         }
     }
 
+    /// v0.6.3 #R8 — append a single refine record. Only invoked when
+    /// `state.debugCaptureEnabled` was true at session begin (writer instance
+    /// would be nil otherwise) AND the refine call actually produced output
+    /// (callers skip recording on the .off / empty-input early-returns inside
+    /// `LLMRefining` implementations).
+    func appendRefine(_ rec: RefineRecord) {
+        queue.async { [weak self] in
+            guard let self, !self.finalized else { return }
+            self.refineCount += 1
+            self.appendJSONL(rec, file: self.folder.appendingPathComponent("refines.jsonl"))
+        }
+    }
+
     /// Write audio.wav + meta.json. Subsequent appends are no-ops. Synchronous
     /// from the queue's perspective (other appends already enqueued before
     /// `finalize` will land first; appends enqueued after will be dropped).
@@ -181,8 +217,9 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.totalAudioSec = audio.duration
             self.meta.totalSegments = self.segmentCount
             self.meta.totalInjections = self.injectionCount
+            self.meta.totalRefines = self.refineCount
             self.writeMeta()
-            Log.app.info("DebugCapture session: \(self.meta.sessionId, privacy: .public) — \(self.segmentCount, privacy: .public) seg, \(self.injectionCount, privacy: .public) inj, \(audio.duration, format: .fixed(precision: 1))s audio → \(self.folder.lastPathComponent, privacy: .public)")
+            Log.app.info("DebugCapture session: \(self.meta.sessionId, privacy: .public) — \(self.segmentCount, privacy: .public) seg, \(self.injectionCount, privacy: .public) inj, \(self.refineCount, privacy: .public) ref, \(audio.duration, format: .fixed(precision: 1))s audio → \(self.folder.lastPathComponent, privacy: .public)")
         }
     }
 
@@ -196,6 +233,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.endedAt = Date()
             self.meta.totalSegments = self.segmentCount
             self.meta.totalInjections = self.injectionCount
+            self.meta.totalRefines = self.refineCount
             self.writeMeta()
         }
     }

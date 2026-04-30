@@ -100,6 +100,88 @@ final class DebugCaptureWriterTests: XCTestCase {
                        "ISO8601 timestamps must retain timezone marker")
     }
 
+    // MARK: - v0.6.3 #R8: refine I/O capture
+
+    func testAppendRefine_WritesJSONLAndUpdatesMetaTotal() throws {
+        let writer = makeWriter(sessionId: "ref00001")
+
+        let r1 = DebugCaptureWriter.RefineRecord(
+            timestamp: Date(),
+            input: "hello world",
+            output: "Hello, world.",
+            mode: "light",
+            backend: "cloud",
+            latencyMs: 312,
+            glossary: "热词：World, Hello",
+            profileSnippet: nil,
+            rawFirst: false
+        )
+        let r2 = DebugCaptureWriter.RefineRecord(
+            timestamp: Date(),
+            input: "uh another sentence",
+            output: "Another sentence.",
+            mode: "aggressive",
+            backend: "local",
+            latencyMs: 745,
+            glossary: nil,
+            profileSnippet: "Prefer terse, technical phrasing.",
+            rawFirst: true
+        )
+        writer.appendRefine(r1)
+        writer.appendRefine(r2)
+        writer.finalize(audio: AudioBuffer(samples: [Float](repeating: 0, count: 16_000), sampleRate: 16_000))
+        drain(writer)
+
+        // 1. refines.jsonl exists with one line per record
+        let jsonlURL = writer.folder.appendingPathComponent("refines.jsonl")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: jsonlURL.path),
+                      "refines.jsonl must be written when appendRefine is called")
+        let raw = try String(contentsOf: jsonlURL, encoding: .utf8)
+        let lines = raw.split(separator: "\n", omittingEmptySubsequences: true)
+        XCTAssertEqual(lines.count, 2, "two appendRefine calls must produce two JSONL lines")
+
+        // 2. Schema fidelity — round-trip first line, verify all fields
+        guard let firstData = lines[0].data(using: .utf8),
+              let first = try JSONSerialization.jsonObject(with: firstData) as? [String: Any] else {
+            XCTFail("first refine line must be parseable JSON object"); return
+        }
+        XCTAssertEqual(first["input"] as? String, "hello world")
+        XCTAssertEqual(first["output"] as? String, "Hello, world.")
+        XCTAssertEqual(first["mode"] as? String, "light")
+        XCTAssertEqual(first["backend"] as? String, "cloud")
+        XCTAssertEqual(first["latencyMs"] as? Int, 312)
+        XCTAssertEqual(first["glossary"] as? String, "热词：World, Hello")
+        XCTAssertEqual(first["rawFirst"] as? Bool, false)
+
+        // 3. Meta.totalRefines reflects the count after finalize
+        let meta = try loadMeta(at: writer.folder.appendingPathComponent("meta.json"))
+        XCTAssertEqual(meta["totalRefines"] as? Int, 2,
+                       "finalize must populate totalRefines from append count")
+    }
+
+    func testAppendRefine_AfterFinalize_DropsRecord() throws {
+        // Mirrors the dropped-after-finalize behavior of appendSegment /
+        // appendInjection: late writes from a still-running Task must not
+        // corrupt finalized session state.
+        let writer = makeWriter(sessionId: "ref00002")
+        writer.finalize(audio: AudioBuffer(samples: [Float](repeating: 0, count: 1_600), sampleRate: 16_000))
+        drain(writer)
+
+        writer.appendRefine(.init(timestamp: Date(), input: "late", output: "late",
+                                   mode: "light", backend: "cloud",
+                                   latencyMs: 100, glossary: nil, profileSnippet: nil, rawFirst: false))
+        drain(writer)
+
+        let jsonlURL = writer.folder.appendingPathComponent("refines.jsonl")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: jsonlURL.path),
+                       "appendRefine after finalize must be a no-op (no JSONL written)")
+
+        // Meta.totalRefines should reflect the in-window count (zero), not be
+        // bumped by the dropped late append.
+        let meta = try loadMeta(at: writer.folder.appendingPathComponent("meta.json"))
+        XCTAssertEqual(meta["totalRefines"] as? Int, 0)
+    }
+
     func testJSONLTimestamps_IncludeFractionalSeconds() throws {
         let writer = makeWriter(sessionId: "frac0002")
         writer.appendSegment(.init(timestamp: Date(), startSec: 0, endSec: 0.5,
@@ -133,7 +215,8 @@ final class DebugCaptureWriterTests: XCTestCase {
             asrContextChars: 0,
             totalAudioSec: nil,
             totalSegments: nil,
-            totalInjections: nil
+            totalInjections: nil,
+            totalRefines: nil
         )
         return DebugCaptureWriter(folder: folder, meta: meta)
     }

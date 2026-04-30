@@ -90,6 +90,12 @@ def load_injections(session_dir: Path) -> list[dict]:
     return _load_jsonl(session_dir / "injections.jsonl")
 
 
+def load_refines(session_dir: Path) -> list[dict]:
+    """v0.6.3 #R8 — refine I/O records. Returns empty list for sessions with
+    no refine activity (mode .off, no credentials, or pre-v0.6.3 captures)."""
+    return _load_jsonl(session_dir / "refines.jsonl")
+
+
 def parse_iso(ts: str) -> datetime:
     """Capture timestamps are emitted as `...Z` (UTC). Python 3.10 fromisoformat
     accepts that directly; 3.8/3.9 don't, so we normalize."""
