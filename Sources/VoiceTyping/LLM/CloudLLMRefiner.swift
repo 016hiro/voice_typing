@@ -37,16 +37,22 @@ final class CloudLLMRefiner: LLMRefining {
         )
 
         do {
+            let t0 = Date()
             let reply = try await chat(
                 system: finalSystem,
                 user: trimmed
             )
+            let httpMs = Int(Date().timeIntervalSince(t0) * 1000)
             let cleaned = LLMRefiningHelpers.stripQuotesAndCode(reply)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            Log.llm.info("Refined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars")
+            // .notice so `log stream` (no `--level info` needed) surfaces
+            // refine latency by default. Mirrors LocalMLXRefiner's format
+            // for grep-friendliness; cloud has no separate load phase so
+            // http_ms is the whole roundtrip.
+            Log.llm.notice("CloudRefined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars in http_ms=\(httpMs, privacy: .public)")
             return cleaned.isEmpty ? text : cleaned
         } catch {
-            Log.llm.warning("Refine failed: \(String(describing: error), privacy: .public)")
+            Log.llm.warning("Cloud refine failed: \(String(describing: error), privacy: .public)")
             return text
         }
     }

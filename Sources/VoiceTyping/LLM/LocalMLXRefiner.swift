@@ -63,7 +63,9 @@ actor LocalMLXRefiner: LLMRefining {
         )
 
         do {
+            let t0 = Date()
             let container = try await ensureLoaded()
+            let loadMs = Int(Date().timeIntervalSince(t0) * 1000)   // ~0 if warm, large if first call
             let session = ChatSession(
                 container,
                 instructions: finalSystem,
@@ -73,11 +75,18 @@ actor LocalMLXRefiner: LLMRefining {
                 ),
                 additionalContext: ["enable_thinking": false]
             )
+            let inferStart = Date()
             let reply = try await session.respond(to: trimmed)
+            let inferMs = Int(Date().timeIntervalSince(inferStart) * 1000)
             let cleaned = LLMRefiningHelpers.stripEmptyThinkBlock(reply)
                 .pipe(LLMRefiningHelpers.stripQuotesAndCode)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            Log.llm.info("LocalRefined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars")
+            // .notice so `log stream` (no `--level info` needed) surfaces
+            // refine latency by default — the user's main signal when
+            // dogfooding the local refiner. Format mirrors LatencyTracker:
+            // load_ms is the cold-load contribution (0 once warm), infer_ms
+            // is the actual generation cost.
+            Log.llm.notice("LocalRefined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars in load_ms=\(loadMs, privacy: .public) infer_ms=\(inferMs, privacy: .public)")
             return cleaned.isEmpty ? text : cleaned
         } catch {
             Log.llm.warning("Local refine failed: \(String(describing: error), privacy: .public)")
@@ -125,7 +134,7 @@ actor LocalMLXRefiner: LLMRefining {
                 using: #huggingFaceTokenizerLoader(),
                 configuration: configuration
             )
-            Log.llm.info("LocalMLXRefiner: loaded in \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public) ms")
+            Log.llm.notice("LocalMLXRefiner: loaded in \(Int(Date().timeIntervalSince(t0) * 1000), privacy: .public) ms")
             return container
         }
         loadInFlight = task
