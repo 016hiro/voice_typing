@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let audio = AudioCapture()
     let injector = TextInjector()
     let fnMonitor = FnHotkeyMonitor()
+    /// v0.6.4: anti-compressor keep-alive for Qwen MLX weights. Started when
+    /// the recognizer reaches `.ready`, stopped on swap / non-ready / quit.
+    let asrKeepAlive = ASRKeepAlive()
 
     /// On-device MLX refiner — held as a singleton so the actor's lazy load +
     /// loaded weights survive across refine calls. Created lazily so users who
@@ -303,6 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backendSwapTask?.cancel()
         recordingDurationTask?.cancel()
         permissionTimer?.invalidate()
+        asrKeepAlive.stop()
         if let obs = appActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
         }
@@ -354,6 +358,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backendSwapTask?.cancel()
         recognizerStateTask?.cancel()
         pipelineTask?.cancel()
+        // v0.6.4: stop keep-alive before tearing down the old recognizer so
+        // an in-flight tick can't dispatch against a model we're about to
+        // unload. New recognizer's state observer re-starts it on `.ready`.
+        asrKeepAlive.stop()
 
         // Unload old Qwen to free weights (WhisperKit doesn't expose unload).
         if let old = recognizer as? QwenASRRecognizer {
@@ -382,10 +390,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             for await s in newRecognizer.stateStream {
                 await MainActor.run { [weak self] in
-                    self?.state.recognizerState = s
+                    guard let self else { return }
+                    self.state.recognizerState = s
                     // Refresh model inventory when download completes
                     if case .ready = s {
-                        self?.state.modelInventoryTick &+= 1
+                        self.state.modelInventoryTick &+= 1
+                    }
+                    // v0.6.4: gate keep-alive on `.ready`. Whisper backend
+                    // doesn't conform to KeepAliveTarget — the `as?` skips it.
+                    // Any non-ready state stops the timer so we don't dispatch
+                    // dummy transcribes during loading / failure.
+                    if case .ready = s,
+                       let qwen = newRecognizer as? QwenASRRecognizer {
+                        self.asrKeepAlive.start(target: qwen)
+                    } else {
+                        self.asrKeepAlive.stop()
                     }
                 }
             }

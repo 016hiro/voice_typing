@@ -6,6 +6,14 @@
 
 _（下个版本的用户可见变更在此累积）_
 
+## v0.6.4 — 2026-05-01
+
+### Fixed
+- **闲置后首次 ASR 卡顿**：v0.6.0 切到 MLX backend 那天就有的存量 bug——闲置 1-2 小时后首次按 Fn 要等 9-30 秒（健康基线 100-500ms）。根因是 macOS unified-memory compressor 把 Qwen MLX 权重压缩成冷页，下次 access 要解压。修法：每 90s 后台跑一次 200ms 静音 dummy transcribe 让权重保持 active。CPU 成本 ~0.3% 持续，无可感发热。Whisper backend 不受影响（CoreML 走 ANE 池，不经 compressor）
+
+### Notes
+- 完整开发记录：[`docs/devlog/v0.6.4.md`](docs/devlog/v0.6.4.md)
+
 ## v0.6.3 — 2026-05-01
 
 ### Added
