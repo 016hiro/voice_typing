@@ -20,12 +20,21 @@ struct LLMConfig: Codable, Equatable {
         case enabled, baseURL, model, timeout
     }
 
+    /// v0.6.3: bumped default timeout 8 → 60 after dogfood hit persistent
+    /// timeouts on OpenRouter. The 8 s limit was originally sized for direct
+    /// OpenAI gpt-4o-mini (1-3 s typical), but most production paths today
+    /// add 2-5 s of routing/queueing (OpenRouter, Together) before any
+    /// upstream work, and reasoning models (o1/o3/r1/:thinking/gpt-5) buffer
+    /// their full reasoning trace before responding when streaming is off.
+    /// `CloudLLMRefiner` now uses streaming so 60 s is generous tailroom,
+    /// not a hot path; reasoning-heavy model ids auto-bump to 90 s in
+    /// `CloudLLMRefiner.chat`.
     static let `default` = LLMConfig(
         enabled: true,
         baseURL: "https://api.openai.com/v1/chat/completions",
         apiKey: "",
         model: "gpt-4o-mini",
-        timeout: 8
+        timeout: 60
     )
 
     /// True when base URL, API key, and model are all populated — i.e. the config
@@ -69,6 +78,14 @@ enum LLMConfigStore {
         if !trimmed.isEmpty && !trimmed.contains("/chat/completions") {
             let separator = trimmed.hasSuffix("/") ? "" : "/"
             cfg.baseURL = trimmed + separator + "chat/completions"
+        }
+        // v0.6.3 migration: existing installs persist the old 8 s default,
+        // which causes near-100% refine timeouts on OpenRouter and any
+        // reasoning model. Clamp anything below the new floor up to the new
+        // default. Idempotent — repeated load() calls are no-ops once
+        // migrated.
+        if cfg.timeout < 30 {
+            cfg.timeout = LLMConfig.default.timeout
         }
         cfg.apiKey = KeychainStore.readAPIKey() ?? ""
         return cfg
