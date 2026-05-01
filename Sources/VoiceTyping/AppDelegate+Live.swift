@@ -1,6 +1,17 @@
 import AppKit
 import Foundation
 
+/// v0.7.0 #R9: outcome of the live-mode inject task. `segmentCount` is the
+/// number of `injector.inject(_:)` calls that actually committed text into
+/// the target app — used by `replaceLastInjection` to know how many Cmd+Z
+/// hits to send when replacing the live-session output with refined text.
+/// Segments that were dropped because focus moved away are NOT counted
+/// (they didn't paste, so they don't have an undo step).
+struct LiveInjectResult: Sendable {
+    let transcript: String
+    let segmentCount: Int
+}
+
 @MainActor
 extension AppDelegate {
 
@@ -51,13 +62,12 @@ extension AppDelegate {
             profileSnippet: profileSnippet
         )
 
-        // Warn-only: live mode + refine combination is intentionally unsupported
-        // for v0.5.0 (Cmd+Z chain across N segment pastes is fragile, see devlog).
-        // The pipelineTask's live branch will skip refine; flag it here so
-        // someone debugging "why isn't my refine running" finds the answer in logs.
-        if state.refineMode.systemPrompt != nil && state.llmConfig.hasCredentials {
-            Log.app.info("Live: refine mode \(self.state.refineMode.rawValue, privacy: .public) skipped — live + refine not yet supported, see v0.5.0 devlog")
-        }
+        // v0.7.0 #R9: live + refine is supported via session-end batch refine.
+        // The pipelineTask's live branch awaits liveInjectTask, then refines
+        // the accumulated transcript and replaces the per-segment pastes via
+        // Cmd+Z × N + paste. `RefineDelivery` (streaming/rawFirst/batch) is
+        // ignored in live mode — always batch at session end. See ADR 0001
+        // and devlog v0.7.0 for the "段终 batch" rationale.
 
         // v0.5.1 Debug Capture: pipe both kept and HallucinationFilter-dropped
         // segments into the writer so the offline analyses (#6 in
@@ -110,6 +120,7 @@ extension AppDelegate {
         let injectWriter = captureWriter   // local capture so the closure is Sendable
         liveInjectTask = Task.detached {
             var accumulated = ""
+            var segmentCount = 0
             do {
                 for try await segment in lt.output {
                     // Compute the delta to inject. First segment goes in
@@ -128,6 +139,7 @@ extension AppDelegate {
                     let status: DebugCaptureWriter.InjectStatus
                     if currentBundleID == frontmostBundleID {
                         await injector.inject(delta)
+                        segmentCount += 1
                         status = .ok
                     } else {
                         Log.app.info("Live: focus moved (\(frontmostBundleID ?? "nil", privacy: .public) → \(currentBundleID ?? "nil", privacy: .public)) — segment dropped from inject (\(segment.count, privacy: .public) chars)")
@@ -157,7 +169,7 @@ extension AppDelegate {
             } catch {
                 Log.app.error("Live inject task error: \(error.localizedDescription, privacy: .public)")
             }
-            return accumulated
+            return LiveInjectResult(transcript: accumulated, segmentCount: segmentCount)
         }
 
         if let ctx = asrContext {

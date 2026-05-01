@@ -97,9 +97,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var liveIngestTask: Task<Void, Never>?
     /// Consumes per-segment yields from `LiveTranscriber.output` and injects
     /// each segment into the focused app the moment it arrives. Returns the
-    /// full accumulated transcript when the stream finishes — `stopRecording`
-    /// awaits this for latency logging.
-    var liveInjectTask: Task<String, Never>?
+    /// full accumulated transcript + segment count when the stream finishes —
+    /// `stopRecording` awaits this for latency logging and (v0.7.0 #R9)
+    /// session-end refine + multi-step undo replace.
+    var liveInjectTask: Task<LiveInjectResult, Never>?
     var liveSnapshot: LiveRunSnapshot?
     var cachedVADBox: SharedVADBox?
 
@@ -747,18 +748,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // --- Live mode ---
             // Segments were transcribed AND injected as they arrived (see
-            // `AppDelegate+Live.swift`'s inject task). Here we just await the
-            // drain to know we have the final transcript, then close out the
-            // capsule UI. Refine is intentionally skipped — see devlog v0.5.0
-            // "明确不做" for why.
+            // `AppDelegate+Live.swift`'s inject task). Here we await the
+            // drain to know we have the final transcript, then (v0.7.0 #R9)
+            // optionally batch-refine and replace the per-segment pastes
+            // via Cmd+Z × N + paste.
             if let lt = liveTranscriber {
                 tracker.mark(.asrStart)
                 await liveIngest?.value     // upstream samples drained
                 lt.finish()                  // signal flush of any tail segment
-                let transcript = (await liveInject?.value) ?? ""
+                let liveResult = (await liveInject?.value) ?? LiveInjectResult(transcript: "", segmentCount: 0)
                 tracker.mark(.asrEnd)
-                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                Log.dev(Log.asr, "Live drain final: \(trimmed.count) chars")
+                let trimmed = liveResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                Log.dev(Log.asr, "Live drain final: \(trimmed.count) chars across \(liveResult.segmentCount) segments")
+
+                // v0.7.0 #R9: session-end refine. Three guards:
+                // 1. mode + creds (same `willRefine` as the batch path)
+                // 2. user actually said something (don't refine an empty string)
+                // 3. at least one segment was injected (else there's nothing
+                //    on screen to replace, and refine + paste would re-paste
+                //    output the user already missed)
+                let willRefine = (mode.systemPrompt != nil) && llmConfig.hasCredentials
+                if willRefine && !trimmed.isEmpty && liveResult.segmentCount > 0 {
+                    await MainActor.run { self.state.status = .refining }
+                    let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
+                    let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }
+                    let refineStarted = Date()
+                    tracker.mark(.llmStart)
+                    let refined = await self.refiner.refine(
+                        trimmed,
+                        language: language,
+                        mode: mode,
+                        glossary: glossary,
+                        profileSnippet: profileSnippet
+                    )
+                    tracker.mark(.llmEnd)
+                    let trimmedRefined = refined.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    captureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
+                        timestamp: refineStarted,
+                        input: trimmed,
+                        output: refined,
+                        mode: mode.rawValue,
+                        backend: refineCaptureBackend,
+                        latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
+                        glossary: glossary,
+                        profileSnippet: profileSnippet,
+                        rawFirst: false
+                    ))
+
+                    // Replace only if refine actually changed something AND
+                    // the user is still in the same target app — otherwise
+                    // a Cmd+Z × N would undo random history in a different
+                    // app. Same focus-safe gate as raw-first.
+                    let unchanged = trimmedRefined == trimmed
+                    let currentBundleID = await MainActor.run { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
+                    let focusSafe = (currentBundleID != nil) && (currentBundleID == frontmostBundleID)
+                    if !unchanged && focusSafe {
+                        await self.replaceLastInjection(with: trimmedRefined, undoSteps: liveResult.segmentCount)
+                    } else if !focusSafe {
+                        Log.app.info("Live refine skipped rewrite: focus moved from \(frontmostBundleID ?? "nil", privacy: .public) to \(currentBundleID ?? "nil", privacy: .public)")
+                    }
+
+                    let llmHits = GlossaryBuilder.matchedEntryIDs(in: trimmedRefined, entries: dictEntries)
+                    await MainActor.run { self.state.noteDictionaryMatches(llmHits) }
+                }
 
                 await MainActor.run {
                     if trimmed.isEmpty {
@@ -770,7 +823,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 tracker.log(
                     backend: backend.rawValue,
-                    mode: "live",  // refine is skipped in live mode
+                    mode: willRefine ? mode.rawValue : "live",
                     dictEntries: dictEntries.count,
                     delivery: "live"
                 )
@@ -1200,23 +1253,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    /// Simulates Cmd+Z (to remove the previous paste) then pastes `refined`.
-    private func replaceLastInjection(with refined: String) async {
+    /// Simulates Cmd+Z `undoSteps` times (to remove the previous N pastes)
+    /// then pastes `refined`. v0.7.0 #R9 generalized the pre-existing
+    /// single-undo helper for live-mode session-end replace, where N >= 1
+    /// per-segment pastes need to be undone before the refined text lands.
+    private func replaceLastInjection(with refined: String, undoSteps: Int = 1) async {
+        guard undoSteps > 0 else {
+            await self.injector.inject(refined)
+            return
+        }
         await MainActor.run {
-            // Send Cmd+Z through the same HID tap path as Cmd+V.
             let zKey: CGKeyCode = 0x06 // kVK_ANSI_Z
             let source = CGEventSource(stateID: .hidSystemState)
-            if let down = CGEvent(keyboardEventSource: source, virtualKey: zKey, keyDown: true) {
-                down.flags = .maskCommand
-                down.post(tap: .cghidEventTap)
-            }
-            usleep(20_000)
-            if let up = CGEvent(keyboardEventSource: source, virtualKey: zKey, keyDown: false) {
-                up.flags = .maskCommand
-                up.post(tap: .cghidEventTap)
+            for _ in 0..<undoSteps {
+                if let down = CGEvent(keyboardEventSource: source, virtualKey: zKey, keyDown: true) {
+                    down.flags = .maskCommand
+                    down.post(tap: .cghidEventTap)
+                }
+                usleep(20_000)
+                if let up = CGEvent(keyboardEventSource: source, virtualKey: zKey, keyDown: false) {
+                    up.flags = .maskCommand
+                    up.post(tap: .cghidEventTap)
+                }
+                // Small inter-undo gap so the target app has time to
+                // process each Cmd+Z before the next one arrives. With
+                // N=1 this matches v0.6.x behavior exactly.
+                usleep(20_000)
             }
         }
-        // Small grace for the host app to process the undo.
+        // Larger grace after the last undo so the host app's undo coalesce
+        // (if any) settles before we paste — otherwise some Electron apps
+        // race the inject ahead of the undo and produce duplicate text.
         try? await Task.sleep(nanoseconds: 60_000_000)
         await self.injector.inject(refined)
     }
