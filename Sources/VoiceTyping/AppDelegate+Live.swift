@@ -20,6 +20,10 @@ struct LiveInjectResult: Sendable {
     let transcript: String
     let segmentCount: Int
     let refinedInline: Bool
+    /// Total `infer_ms` across all per-segment refines (local path only;
+    /// 0 for cloud path). Used by `pipelineTask` to backfill `llm_ms` in
+    /// the latency log so the per-segment path doesn't read as -1.
+    let localRefineMs: Int
 }
 
 @MainActor
@@ -235,13 +239,18 @@ extension AppDelegate {
             } catch {
                 Log.app.error("Live inject task error: \(error.localizedDescription, privacy: .public)")
             }
+            // Capture aggregated per-segment refine time before tearing down
+            // the session — `end()` clears state. 0 for cloud path (no
+            // session), valid sum for local path.
+            let localRefineMs = await (localLiveSession?.totalInferMs ?? 0)
             // Release the live ChatSession + KV cache. Idempotent; safe even
             // when localLiveSession is nil (just a no-op via optional chain).
             await localLiveSession?.end()
             return LiveInjectResult(
                 transcript: accumulated,
                 segmentCount: segmentCount,
-                refinedInline: usingLocalLive
+                refinedInline: usingLocalLive,
+                localRefineMs: localRefineMs
             )
         }
 

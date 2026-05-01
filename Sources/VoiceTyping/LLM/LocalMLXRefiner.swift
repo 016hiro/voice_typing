@@ -256,6 +256,13 @@ actor LocalLiveSegmentSession {
     private var chatSession: ChatSession?
     private var firstSegmentLoadedMs: Int = 0  // for the first-segment log line
 
+    /// v0.7.0 #R9 redo follow-up: sum of per-segment `infer_ms` so the
+    /// pipelineTask's tracker can backfill `llm_ms` in the session-level
+    /// latency log line. Without this the log shows `llm_ms=-1` for the
+    /// per-segment path even though refine clearly ran — see Console
+    /// `LocalLiveSegment (...) infer_ms=...` per segment for ground truth.
+    private(set) var totalInferMs: Int = 0
+
     init(refiner: LocalMLXRefiner,
          mode: RefineMode,
          glossary: String?,
@@ -339,6 +346,7 @@ actor LocalLiveSegmentSession {
             }
 
             let inferMs = Int(Date().timeIntervalSince(inferStart) * 1000)
+            totalInferMs += inferMs
             Log.llm.notice("LocalLiveSegment (\(self.mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(totalChars, privacy: .public) chars in load_ms=\(self.firstSegmentLoadedMs, privacy: .public) infer_ms=\(inferMs, privacy: .public)")
             // Reset load_ms after the first segment so subsequent log lines
             // accurately report 0 — the container only loads once per live

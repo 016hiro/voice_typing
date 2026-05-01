@@ -44,9 +44,16 @@ final class LatencyTracker: @unchecked Sendable {
     /// batch) or `"live"` for live-mode runs that skip refine entirely.
     /// v0.7.0 #R6 generalized the pre-existing `rawFirst: Bool` field —
     /// dogfood log parsers should read `delivery=...` instead.
-    func log(backend: String, mode: String, dictEntries: Int, delivery: String) {
+    ///
+    /// `overrideLlmMs` (#R9 redo follow-up) — for the local-per-segment
+    /// live path the refine happens inside `liveInjectTask` (detached,
+    /// outside this tracker's scope), so `mark(.llmStart/.llmEnd)` is
+    /// never called and `ms(.llmStart, .llmEnd)` would return -1. Caller
+    /// passes the aggregated per-segment infer_ms here so the log line
+    /// reflects reality.
+    func log(backend: String, mode: String, dictEntries: Int, delivery: String, overrideLlmMs: Int? = nil) {
         let asr    = ms(.asrStart, .asrEnd)
-        let llm    = ms(.llmStart, .llmEnd)
+        let llm    = overrideLlmMs ?? ms(.llmStart, .llmEnd)
         let inject = ms(.injectStart, .injectEnd)
         let total  = Int(((CFAbsoluteTimeGetCurrent() - createdAt) * 1000).rounded())
 

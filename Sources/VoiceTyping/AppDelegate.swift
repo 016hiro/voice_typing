@@ -758,7 +758,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 tracker.mark(.asrStart)
                 await liveIngest?.value     // upstream samples drained
                 lt.finish()                  // signal flush of any tail segment
-                let liveResult = (await liveInject?.value) ?? LiveInjectResult(transcript: "", segmentCount: 0, refinedInline: false)
+                let liveResult = (await liveInject?.value) ?? LiveInjectResult(transcript: "", segmentCount: 0, refinedInline: false, localRefineMs: 0)
                 tracker.mark(.asrEnd)
                 let trimmed = liveResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                 Log.dev(Log.asr, "Live drain final: \(trimmed.count) chars across \(liveResult.segmentCount) raw segments (refinedInline=\(liveResult.refinedInline))")
@@ -829,7 +829,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     backend: backend.rawValue,
                     mode: willRefine ? mode.rawValue : "live",
                     dictEntries: dictEntries.count,
-                    delivery: "live"
+                    delivery: "live",
+                    overrideLlmMs: liveResult.refinedInline ? liveResult.localRefineMs : nil
                 )
                 captureWriter?.finalize(audio: buffer)
                 return
