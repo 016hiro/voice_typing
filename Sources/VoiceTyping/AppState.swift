@@ -165,6 +165,14 @@ final class AppState: ObservableObject {
     @Published var accessibilityGranted: Bool = false
     @Published var microphoneGranted: Bool = false
 
+    /// v0.7.0 #R8: count of characters the streaming refine has yielded so
+    /// far. Bumped from `injectStreamingRefine`'s stream wrapper as each
+    /// chunk arrives; reset to 0 when the pipeline returns to `.idle`.
+    /// Capsule reads this to show "Refining (N chars)" while streaming —
+    /// gives the user a visible "still working" signal even when the LLM
+    /// pauses for a few hundred ms between tokens.
+    @Published var streamingChars: Int = 0
+
     /// Bumped when model listings (downloaded/deleted/downloading) change, so menus can refresh.
     @Published var modelInventoryTick: Int = 0
 
@@ -280,11 +288,16 @@ final class AppState: ObservableObject {
 
     /// Text shown in the capsule — v0.4.4 onwards only the pipeline phase is
     /// surfaced (transcript text was removed after it looked cramped/flashy).
+    /// v0.7.0 adds a `(N chars)` suffix during streaming refine so the user
+    /// sees forward progress between LLM tokens.
     var statusTextForCapsule: String {
         switch status {
         case .idle, .recording: return "Listening"
         case .transcribing:     return "Transcribing"
-        case .refining:         return "Refining"
+        case .refining:
+            return streamingChars > 0
+                ? "Refining (\(streamingChars) chars)"
+                : "Refining"
         case .info(let msg):    return msg
         }
     }

@@ -999,10 +999,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `injector.injectIncremental(stream:)` — chunks land in the focused app
     /// at sentence/word boundaries as the LLM produces them. No raw-first
     /// fallback, no post-hoc replace; user sees forward-only writing.
-    /// Cancellation (Esc / focus loss in #R8) is wired by cancelling
-    /// `pipelineTask`, which propagates a CancellationError into the stream
-    /// iterator inside `injectIncremental` — the in-flight pending buffer
-    /// is dropped (see `TextInjector.injectIncremental` for the contract).
+    ///
+    /// **Cancellation (#R8)** — two signals route to the same `pipelineTask`:
+    /// 1. **Esc**: a global keydown monitor watches for `kVK_Escape` and
+    ///    cancels `pipelineTask`. The monitor doesn't intercept (target app
+    ///    may also see Esc — usually a no-op / popover dismiss, acceptable).
+    /// 2. **Focus loss**: the wrapped stream snapshots the frontmost bundle
+    ///    ID at start; on each chunk it re-checks and finishes the stream
+    ///    with `CancellationError` if the user has switched apps.
+    /// Both surface inside `injectIncremental` as a CancellationError, which
+    /// drops the pending buffer and restores the pasteboard.
     private func injectStreamingRefine(
         raw: String,
         mode: RefineMode,
@@ -1015,24 +1021,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ) async {
         await MainActor.run {
             self.state.status = .refining
+            self.state.streamingChars = 0
         }
         let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
         let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }
         let refineStarted = Date()
+        let initialBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let pipelineTaskRef = self.pipelineTask
+
+        // Esc monitor — addGlobalMonitorForEvents handler runs on the main
+        // run loop, so calling Task.cancel() from it is safe; cancel() itself
+        // is also thread-safe.
+        let escMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 {  // kVK_Escape
+                Log.app.info("StreamingRefine: Esc cancel")
+                pipelineTaskRef?.cancel()
+            }
+        }
+        defer {
+            if let m = escMonitor { NSEvent.removeMonitor(m) }
+        }
 
         // Streaming overlaps the llm and inject phases — both bounds match
         // the life of refineStream consumption.
         tracker.mark(.llmStart)
         tracker.mark(.injectStart)
 
-        let stream = self.refiner.refineStream(
+        let upstream = self.refiner.refineStream(
             raw,
             language: language,
             mode: mode,
             glossary: glossary,
             profileSnippet: profileSnippet
         )
-        let result = await self.injector.injectIncremental(stream: stream)
+
+        // Wrap upstream with the focus-loss watch + capsule progress counter.
+        // We can't put the focus check inside `injectIncremental` without
+        // coupling it to `NSWorkspace`, and we can't put it inside `refiner`
+        // because the refiner is platform-agnostic. Doing it here keeps both
+        // boundaries clean.
+        let watched = AsyncThrowingStream<String, Error> { continuation in
+            let task = Task { [weak self] in
+                do {
+                    for try await chunk in upstream {
+                        let current = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                        if current != initialBundleID {
+                            Log.app.info("StreamingRefine: focus changed \(initialBundleID ?? "nil", privacy: .public) → \(current ?? "nil", privacy: .public), cancelling")
+                            continuation.finish(throwing: CancellationError())
+                            return
+                        }
+                        if let self {
+                            let count = chunk.count
+                            await MainActor.run { self.state.streamingChars += count }
+                        }
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+
+        let result = await self.injector.injectIncremental(stream: watched)
 
         tracker.mark(.injectEnd)
         tracker.mark(.llmEnd)
@@ -1052,6 +1104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let llmHits = GlossaryBuilder.matchedEntryIDs(in: result.accumulated, entries: dictEntries)
         await MainActor.run {
             self.state.noteDictionaryMatches(llmHits)
+            self.state.streamingChars = 0
             self.capsuleWindow.hide()
             self.state.status = .idle
         }
