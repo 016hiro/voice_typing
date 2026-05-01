@@ -768,7 +768,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // local LocalLiveSegmentSession already injected refined
                 // text per segment — there's nothing to replace and a
                 // session-end refine would just double-spend tokens.
-                let willRefine = (mode.systemPrompt != nil) && llmConfig.hasCredentials
+                let willRefine = (mode.systemPrompt != nil) && self.state.refinerReady
                 if !liveResult.refinedInline
                     && willRefine
                     && !trimmed.isEmpty
@@ -878,8 +878,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let asrHits = GlossaryBuilder.matchedEntryIDs(in: trimmed, entries: dictEntries)
             await MainActor.run { self.state.noteDictionaryMatches(asrHits) }
 
-            // Decide whether refinement will run at all.
-            let willRefine = (mode.systemPrompt != nil) && llmConfig.hasCredentials
+            // Decide whether refinement will run at all. v0.7.0 #R9 redo
+            // bug-fix: route through `state.refinerReady` so a local-only
+            // user (no cloud creds by design) actually gets refine.
+            let willRefine = (mode.systemPrompt != nil) && self.state.refinerReady
 
             let injStart = Date()
             if !willRefine {

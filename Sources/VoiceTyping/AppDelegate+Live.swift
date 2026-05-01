@@ -85,8 +85,11 @@ extension AppDelegate {
         // live mode — the path is determined by `state.localRefinerEnabled`.
         // ADR 0001 documents the choice.
         let refineMode = state.refineMode
-        let llmConfig = state.llmConfig
-        let willRefine = (refineMode.systemPrompt != nil) && llmConfig.hasCredentials
+        // v0.7.0 #R9 redo bug-fix: gate via `state.refinerReady` not raw
+        // `llmConfig.hasCredentials` — local-only users have blank cloud
+        // creds by design, and the old gate silently bypassed refine for
+        // them. `refinerReady` routes through the active backend.
+        let willRefine = (refineMode.systemPrompt != nil) && state.refinerReady
         let useLocalPerSegment = willRefine
             && state.localRefinerEnabled
             && ModelStore.isLocalRefinerComplete(atDirectory: ModelStore.localRefinerDirectory)

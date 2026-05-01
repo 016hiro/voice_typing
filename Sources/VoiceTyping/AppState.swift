@@ -113,6 +113,19 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(localRefinerEnabled, forKey: "localRefinerEnabled") }
     }
 
+    /// v0.7.0 #R9 redo bug-fix: the *currently selected* refiner has what it
+    /// needs to refine. Pre-v0.7.0 the `willRefine` gate everywhere checked
+    /// only `llmConfig.hasCredentials`, which silently bypassed refine for
+    /// users running local-only (cloud creds blank by design). This helper
+    /// routes the readiness check through whichever backend is active —
+    /// model presence for local, full creds for cloud.
+    var refinerReady: Bool {
+        if localRefinerEnabled {
+            return ModelStore.isLocalRefinerComplete(atDirectory: ModelStore.localRefinerDirectory)
+        }
+        return llmConfig.hasCredentials
+    }
+
     /// v0.5.1 Debug Data Capture — when on, every recording session's audio +
     /// per-segment text + inject result land under
     /// `~/Library/Application Support/VoiceTyping/debug-captures/<session>/`.
