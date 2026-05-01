@@ -23,10 +23,57 @@ protocol LLMRefining: Sendable {
                 glossary: String?,
                 profileSnippet: String?) async -> String
 
+    /// v0.7.0: streaming variant — yields *delta* chunks (not cumulative) as
+    /// the LLM produces them. Used by the streaming inject path; the batch
+    /// `refine(...)` above stays for raw-first / Notion-deny / pre-streaming
+    /// callers (see ADR 0001).
+    ///
+    /// On error the stream finishes with that error — callers handle
+    /// fail-open (returning input text on failure) themselves. This is
+    /// intentionally different from `refine`'s baked-in fail-open: a
+    /// half-streamed inject can't be transparently swapped for the input
+    /// string, so the caller has to decide what to do with partial output.
+    ///
+    /// A default implementation in the extension below derives this from
+    /// `refine` by emitting the full result as a single chunk — lets impls
+    /// satisfy the protocol unchanged. Cloud / local override with true
+    /// incremental yield in #R3 / #R4.
+    func refineStream(_ text: String,
+                      language: Language,
+                      mode: RefineMode,
+                      glossary: String?,
+                      profileSnippet: String?) -> AsyncThrowingStream<String, Error>
+
     /// Sends a tiny test request to confirm the impl is wired up correctly
     /// (credentials valid, endpoint reachable, weights loaded, etc.). Used by
     /// the Settings UI's "Test connection" button. Not on the hot path.
     func test() async -> LLMRefiningTestResult
+}
+
+extension LLMRefining {
+
+    /// Default `refineStream` — wraps the batch `refine` as a single yield.
+    /// Inherited by impls that haven't been migrated to true streaming;
+    /// preserves end-to-end behavior so callers can adopt the streaming
+    /// API ahead of impl-level streaming work.
+    func refineStream(_ text: String,
+                      language: Language,
+                      mode: RefineMode,
+                      glossary: String?,
+                      profileSnippet: String?) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let result = await self.refine(text,
+                                               language: language,
+                                               mode: mode,
+                                               glossary: glossary,
+                                               profileSnippet: profileSnippet)
+                continuation.yield(result)
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }
 
 enum LLMRefiningTestResult: Sendable {
