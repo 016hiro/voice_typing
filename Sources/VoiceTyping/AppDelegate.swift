@@ -16,7 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// On-device MLX refiner — held as a singleton so the actor's lazy load +
     /// loaded weights survive across refine calls. Created lazily so users who
     /// never enable it don't pay any allocation cost.
-    private lazy var localRefinerInstance: LocalMLXRefiner = {
+    /// Internal (not private) so `AppDelegate+Live.swift` can build a
+    /// `LocalLiveSegmentSession` off it for v0.7.0 #R9 redo per-segment refine.
+    lazy var localRefinerInstance: LocalMLXRefiner = {
         LocalMLXRefiner(modelDirectory: ModelStore.localRefinerDirectory)
     }()
 
@@ -756,19 +758,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 tracker.mark(.asrStart)
                 await liveIngest?.value     // upstream samples drained
                 lt.finish()                  // signal flush of any tail segment
-                let liveResult = (await liveInject?.value) ?? LiveInjectResult(transcript: "", segmentCount: 0)
+                let liveResult = (await liveInject?.value) ?? LiveInjectResult(transcript: "", segmentCount: 0, refinedInline: false)
                 tracker.mark(.asrEnd)
                 let trimmed = liveResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                Log.dev(Log.asr, "Live drain final: \(trimmed.count) chars across \(liveResult.segmentCount) segments")
+                Log.dev(Log.asr, "Live drain final: \(trimmed.count) chars across \(liveResult.segmentCount) raw segments (refinedInline=\(liveResult.refinedInline))")
 
-                // v0.7.0 #R9: session-end refine. Three guards:
-                // 1. mode + creds (same `willRefine` as the batch path)
-                // 2. user actually said something (don't refine an empty string)
-                // 3. at least one segment was injected (else there's nothing
-                //    on screen to replace, and refine + paste would re-paste
-                //    output the user already missed)
+                // v0.7.0 #R9 redo: session-end batch refine ONLY for the
+                // cloud / no-local path. When `refinedInline` is true, the
+                // local LocalLiveSegmentSession already injected refined
+                // text per segment — there's nothing to replace and a
+                // session-end refine would just double-spend tokens.
                 let willRefine = (mode.systemPrompt != nil) && llmConfig.hasCredentials
-                if willRefine && !trimmed.isEmpty && liveResult.segmentCount > 0 {
+                if !liveResult.refinedInline
+                    && willRefine
+                    && !trimmed.isEmpty
+                    && liveResult.segmentCount > 0 {
                     await MainActor.run { self.state.status = .refining }
                     let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
                     let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }

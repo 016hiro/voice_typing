@@ -1,15 +1,25 @@
 import AppKit
 import Foundation
 
-/// v0.7.0 #R9: outcome of the live-mode inject task. `segmentCount` is the
-/// number of `injector.inject(_:)` calls that actually committed text into
-/// the target app — used by `replaceLastInjection` to know how many Cmd+Z
-/// hits to send when replacing the live-session output with refined text.
-/// Segments that were dropped because focus moved away are NOT counted
-/// (they didn't paste, so they don't have an undo step).
+/// v0.7.0 #R9 redo: outcome of the live-mode inject task. Two paths share
+/// this struct:
+///
+/// - **Cloud / no-refine**: per segment we do a single raw `injector.inject`,
+///   then at session end (`pipelineTask`) batch-refine the transcript and
+///   `Cmd+Z × segmentCount + paste` to replace. `refinedInline=false`,
+///   `segmentCount` ≥ 0.
+/// - **Local per-segment**: per segment we run a streaming refine through
+///   `LocalLiveSegmentSession` straight into `injector.injectIncremental`,
+///   so refined text is on screen immediately. No session-end replace.
+///   `refinedInline=true`, `segmentCount=0` (no raw paste to undo).
+///
+/// `segmentCount` only counts segments that actually pasted — focus-loss
+/// drops a segment from inject AND from the count, so a session-end
+/// Cmd+Z × N matches reality.
 struct LiveInjectResult: Sendable {
     let transcript: String
     let segmentCount: Int
+    let refinedInline: Bool
 }
 
 @MainActor
@@ -62,12 +72,36 @@ extension AppDelegate {
             profileSnippet: profileSnippet
         )
 
-        // v0.7.0 #R9: live + refine is supported via session-end batch refine.
-        // The pipelineTask's live branch awaits liveInjectTask, then refines
-        // the accumulated transcript and replaces the per-segment pastes via
-        // Cmd+Z × N + paste. `RefineDelivery` (streaming/rawFirst/batch) is
-        // ignored in live mode — always batch at session end. See ADR 0001
-        // and devlog v0.7.0 for the "段终 batch" rationale.
+        // v0.7.0 #R9 redo: live + refine bifurcates by backend.
+        // - Cloud: per-segment raw inject; session-end batch refine + Cmd+Z×N
+        //   replace (R9 v1 path). Cheap on API calls; clean Cmd+Z UX; user
+        //   waits ~1-3s after Fn↑ for refined to land.
+        // - Local: per-segment streaming refine with chat-history-carried
+        //   context (`LocalLiveSegmentSession`); refined text appears
+        //   progressively as user speaks. Free locally; messier Cmd+Z (each
+        //   chunk is its own undo step) but acceptable since live users
+        //   rarely undo whole sessions.
+        // `RefineDelivery` setting (streaming/rawFirst/batch) is ignored in
+        // live mode — the path is determined by `state.localRefinerEnabled`.
+        // ADR 0001 documents the choice.
+        let refineMode = state.refineMode
+        let llmConfig = state.llmConfig
+        let willRefine = (refineMode.systemPrompt != nil) && llmConfig.hasCredentials
+        let useLocalPerSegment = willRefine
+            && state.localRefinerEnabled
+            && ModelStore.isLocalRefinerComplete(atDirectory: ModelStore.localRefinerDirectory)
+        let segmentGlossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
+        let localLiveSession: LocalLiveSegmentSession? = useLocalPerSegment
+            ? localRefinerInstance.makeLiveSegmentSession(
+                mode: refineMode,
+                glossary: segmentGlossary,
+                profileSnippet: profileSnippet)
+            : nil
+        if useLocalPerSegment {
+            Log.app.info("Live: local per-segment streaming refine session opened")
+        } else if willRefine {
+            Log.app.info("Live: cloud session-end batch refine path (refine deferred to Fn↑)")
+        }
 
         // v0.5.1 Debug Capture: pipe both kept and HallucinationFilter-dropped
         // segments into the writer so the offline analyses (#6 in
@@ -118,28 +152,57 @@ extension AppDelegate {
         let injector = self.injector
         let appState = self.state
         let injectWriter = captureWriter   // local capture so the closure is Sendable
-        liveInjectTask = Task.detached {
+        liveInjectTask = Task.detached { [localLiveSession] in
             var accumulated = ""
             var segmentCount = 0
+            let usingLocalLive = (localLiveSession != nil)
             do {
                 for try await segment in lt.output {
-                    // Compute the delta to inject. First segment goes in
-                    // as-is; subsequent segments get a leading space so
-                    // English reads naturally. (Chinese gets an extra space
-                    // between segments, matching v0.4.5 batch streaming.)
-                    let delta = accumulated.isEmpty ? segment : " " + segment
+                    // First segment goes in as-is; subsequent segments get a
+                    // leading space so English reads naturally. Chinese also
+                    // gets the space, matching v0.4.5 batch-streaming output.
+                    let separator = accumulated.isEmpty ? "" : " "
+                    let delta = separator + segment
 
-                    // Focus check: if the user switched apps mid-recording,
-                    // skip injection but still accumulate so the final
-                    // transcript log is complete.
+                    // Focus check — same gate for both paths. If the user
+                    // switched apps mid-recording, drop this segment entirely
+                    // (no inject, no refine, no segmentCount bump).
                     let currentBundleID: String? = await MainActor.run {
                         NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                     }
                     let injStart = Date()
                     let status: DebugCaptureWriter.InjectStatus
                     if currentBundleID == frontmostBundleID {
-                        await injector.inject(delta)
-                        segmentCount += 1
+                        if let liveSession = localLiveSession {
+                            // Local per-segment streaming refine. We build a
+                            // wrapper stream that yields the separator first
+                            // (so the model only sees the raw segment, not a
+                            // leading space its history wouldn't match), then
+                            // forwards refined chunks. injectIncremental
+                            // pastes at flush boundaries (#R5).
+                            let stream = AsyncThrowingStream<String, Error> { continuation in
+                                let task = Task {
+                                    if !separator.isEmpty {
+                                        continuation.yield(separator)
+                                    }
+                                    do {
+                                        for try await chunk in liveSession.refineSegmentStream(segment) {
+                                            continuation.yield(chunk)
+                                        }
+                                        continuation.finish()
+                                    } catch {
+                                        continuation.finish(throwing: error)
+                                    }
+                                }
+                                continuation.onTermination = { _ in task.cancel() }
+                            }
+                            _ = await injector.injectIncremental(stream: stream)
+                            // Don't bump segmentCount — there's no raw paste
+                            // to undo at session end on this path.
+                        } else {
+                            await injector.inject(delta)
+                            segmentCount += 1
+                        }
                         status = .ok
                     } else {
                         Log.app.info("Live: focus moved (\(frontmostBundleID ?? "nil", privacy: .public) → \(currentBundleID ?? "nil", privacy: .public)) — segment dropped from inject (\(segment.count, privacy: .public) chars)")
@@ -169,7 +232,14 @@ extension AppDelegate {
             } catch {
                 Log.app.error("Live inject task error: \(error.localizedDescription, privacy: .public)")
             }
-            return LiveInjectResult(transcript: accumulated, segmentCount: segmentCount)
+            // Release the live ChatSession + KV cache. Idempotent; safe even
+            // when localLiveSession is nil (just a no-op via optional chain).
+            await localLiveSession?.end()
+            return LiveInjectResult(
+                transcript: accumulated,
+                segmentCount: segmentCount,
+                refinedInline: usingLocalLive
+            )
         }
 
         if let ctx = asrContext {

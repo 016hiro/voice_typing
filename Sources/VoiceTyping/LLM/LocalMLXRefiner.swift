@@ -28,7 +28,9 @@ import Tokenizers
 /// are independent.
 actor LocalMLXRefiner: LLMRefining {
 
-    private let modelDirectory: URL
+    /// `nonisolated` so `LocalLiveSegmentSession` can read the path without
+    /// hopping into the actor — pure config that never changes after init.
+    nonisolated let modelDirectory: URL
     private var loadedContainer: ModelContainer?
     private var loadInFlight: Task<ModelContainer, Error>?
 
@@ -184,10 +186,29 @@ actor LocalMLXRefiner: LLMRefining {
         }
     }
 
+    /// v0.7.0 #R9 redo: factory for a multi-segment live refine session.
+    /// Returns an actor that holds one `ChatSession` across the whole live
+    /// recording — chat history accumulates so segment N+1's refine sees
+    /// segment N's refined output, resolving cross-segment references like
+    /// pronouns. Created at Fn↓; `end()` called at Fn↑ to release the
+    /// session and its KV cache.
+    nonisolated func makeLiveSegmentSession(mode: RefineMode,
+                                            glossary: String?,
+                                            profileSnippet: String?) -> LocalLiveSegmentSession {
+        return LocalLiveSegmentSession(
+            refiner: self,
+            mode: mode,
+            glossary: glossary,
+            profileSnippet: profileSnippet
+        )
+    }
+
     /// Lazily load weights on first call. Coalesces concurrent loads into a
     /// single Task — second/third concurrent `refine` await the same in-flight
     /// load rather than triggering N parallel `loadModelContainer` calls.
-    private func ensureLoaded() async throws -> ModelContainer {
+    /// Internal (not private) so `LocalLiveSegmentSession` can share the
+    /// warm container across a multi-segment live recording.
+    func ensureLoaded() async throws -> ModelContainer {
         if let loaded = loadedContainer { return loaded }
         if let inFlight = loadInFlight {
             return try await inFlight.value
@@ -212,3 +233,127 @@ actor LocalMLXRefiner: LLMRefining {
     }
 }
 
+/// v0.7.0 #R9 redo: holds one mlx-swift-lm `ChatSession` across the lifetime
+/// of a live recording. Each segment's refine call runs `streamResponse` on
+/// the same session — chat history accumulates so segment N's refined output
+/// is in context when segment N+1 is refined. Solves the "cross-segment
+/// reference" problem (it/that/them) without prompt-template hacks.
+///
+/// **Concurrency**: actor — `streamResponse` calls hold a KV-cache lock
+/// internally, so concurrent segment refines would serialize anyway. The
+/// actor surface makes that explicit and lets the live inject task await
+/// in-order without surprises.
+///
+/// **Lifecycle**: created at Fn↓ via `LocalMLXRefiner.makeLiveSegmentSession`,
+/// `end()` at Fn↑ to drop the session and release its KV cache. The first
+/// `refineSegmentStream` lazily creates the underlying `ChatSession` after
+/// awaiting `refiner.ensureLoaded()` — same warm container the one-shot
+/// `refine` uses.
+actor LocalLiveSegmentSession {
+    private let refiner: LocalMLXRefiner
+    private let mode: RefineMode
+    private let finalSystem: String
+    private var chatSession: ChatSession?
+    private var firstSegmentLoadedMs: Int = 0  // for the first-segment log line
+
+    init(refiner: LocalMLXRefiner,
+         mode: RefineMode,
+         glossary: String?,
+         profileSnippet: String?) {
+        self.refiner = refiner
+        self.mode = mode
+        let baseSystem = mode.systemPrompt ?? ""
+        self.finalSystem = LLMRefiningHelpers.compose(
+            systemPrompt: baseSystem,
+            profileSnippet: profileSnippet,
+            glossary: glossary
+        )
+    }
+
+    /// Streams refined output for one segment of a live recording. The
+    /// session's chat history is auto-extended by mlx-swift-lm with the
+    /// current `text` and the model's reply, so segment N+1 gets prior
+    /// segments as context. Empty / `.off` / model-not-downloaded inputs
+    /// finish the stream immediately empty (caller falls back to raw).
+    nonisolated func refineSegmentStream(_ text: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { [self] in
+                await self.runSegment(text, continuation: continuation)
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func runSegment(_ text: String,
+                            continuation: AsyncThrowingStream<String, Error>.Continuation) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { continuation.finish(); return }
+        guard mode.systemPrompt != nil else { continuation.finish(); return }
+        guard ModelStore.isLocalRefinerComplete(atDirectory: refiner.modelDirectory) else {
+            continuation.finish()
+            return
+        }
+
+        do {
+            // First-segment lazy create: load container (shared with one-shot
+            // refine, so warm if user did a non-live refine recently) and
+            // build a ChatSession with the system prompt frozen at session
+            // start. Chat history grows from here.
+            if chatSession == nil {
+                let t0 = Date()
+                let container = try await refiner.ensureLoaded()
+                firstSegmentLoadedMs = Int(Date().timeIntervalSince(t0) * 1000)
+                chatSession = ChatSession(
+                    container,
+                    instructions: finalSystem,
+                    generateParameters: GenerateParameters(maxTokens: 512, temperature: 0),
+                    additionalContext: ["enable_thinking": false]
+                )
+            }
+            guard let session = chatSession else { continuation.finish(); return }
+
+            let inferStart = Date()
+            // Same head-buffer pattern as one-shot streaming refine — strips
+            // the optional empty `<think>\n\n</think>` Qwen3 bookend before
+            // any chunk reaches the user. Per-segment, so applied each call.
+            var head = ""
+            var headFlushed = false
+            var totalChars = 0
+            for try await chunk in session.streamResponse(to: trimmed) {
+                totalChars += chunk.count
+                if headFlushed {
+                    continuation.yield(chunk)
+                } else {
+                    head += chunk
+                    if head.count >= 30 || head.contains("\n") {
+                        let cleaned = LLMRefiningHelpers.stripEmptyThinkBlock(head)
+                        if !cleaned.isEmpty { continuation.yield(cleaned) }
+                        head = ""
+                        headFlushed = true
+                    }
+                }
+            }
+            if !headFlushed {
+                let cleaned = LLMRefiningHelpers.stripEmptyThinkBlock(head)
+                if !cleaned.isEmpty { continuation.yield(cleaned) }
+            }
+
+            let inferMs = Int(Date().timeIntervalSince(inferStart) * 1000)
+            Log.llm.notice("LocalLiveSegment (\(self.mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(totalChars, privacy: .public) chars in load_ms=\(self.firstSegmentLoadedMs, privacy: .public) infer_ms=\(inferMs, privacy: .public)")
+            // Reset load_ms after the first segment so subsequent log lines
+            // accurately report 0 — the container only loads once per live
+            // session.
+            firstSegmentLoadedMs = 0
+            continuation.finish()
+        } catch {
+            Log.llm.warning("LocalLiveSegment refine failed: \(String(describing: error), privacy: .public)")
+            continuation.finish(throwing: error)
+        }
+    }
+
+    /// Releases the underlying ChatSession + KV cache. Idempotent. Caller
+    /// invokes from Fn↑ once the inject task has drained.
+    func end() {
+        chatSession = nil
+    }
+}
