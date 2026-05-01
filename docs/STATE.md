@@ -30,7 +30,9 @@ _Last updated: 2026-05-01_
 
 ## Next Concrete Step
 
-**v0.7.0 主线**：#R1 spike 收口（Cmd+V incremental 胜出，ADR 0001 落档），下一步 #R2 —— `LLMRefining` 协议加 `refineStream(...) -> AsyncThrowingStream<String, Error>`（yield delta 不是累积值），旧 `refine` 留默认实现保 batch / raw-first 零迁移。然后 #R3 cloud `accumulated += chunk` 改 yield，#R4 local 换 `streamResponse`。
+**v0.7.0 主线**：#R1-#R9 全部 code-complete (commits a9c88bc..2336e35)。`make test` 208 pass / 0 fail；release build 干净。剩 #R10 (integration test 套) + #R11 (16 GB Mac dogfood) + 收尾 (Info.plist bump / devlog / CHANGELOG / DMG / appcast)。
+
+**用户验收清单待跑** —— Settings UI 三段 picker 视觉、capsule 流式 "Refining (N chars)"、Esc 取消、focus-loss 自动停、Notion auto-batch、Live mode 段终 refine + 多步 Cmd+Z replace。详见 chat 中给的 checklist。
 
 ## Blockers / Open Questions
 
