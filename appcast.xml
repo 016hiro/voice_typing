@@ -6,6 +6,14 @@
     <description>Updates for VoiceTyping</description>
     <language>en</language>
     <item>
+      <title>Version 0.7.0</title>
+      <pubDate>Fri, 01 May 2026 19:37:27 GMT</pubDate>
+      <sparkle:version>21</sparkle:version>
+      <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/016hiro/voice_typing/releases/download/v0.7.0/VoiceTyping-0.7.0.dmg" sparkle:edSignature="GfaP+4CmymAwJJAEW6LMd9uL0o9Zbc6sVqWVVbu1jDkbbjiSQVccEE1awm6QBBVuHzt0V+YmHI4qX34PiXr7DA==" length="45763994" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 0.6.4</title>
       <pubDate>Thu, 30 Apr 2026 18:30:04 GMT</pubDate>
       <sparkle:version>20</sparkle:version>
