@@ -41,19 +41,64 @@ actor LocalMLXRefiner: LLMRefining {
                             mode: RefineMode,
                             glossary: String?,
                             profileSnippet: String?) async -> String {
-        await refineImpl(text, mode: mode, glossary: glossary, profileSnippet: profileSnippet)
+        var accumulated = ""
+        do {
+            for try await chunk in refineStream(text,
+                                                language: language,
+                                                mode: mode,
+                                                glossary: glossary,
+                                                profileSnippet: profileSnippet) {
+                accumulated += chunk
+            }
+        } catch {
+            // Stream layer already logged via refineStreamImpl.
+            return text
+        }
+        // Apply the bookend `stripQuotesAndCode` on the full accumulated
+        // string — this is the batch contract. The streaming path can only
+        // strip the *leading* `<think></think>` (done inside refineStream);
+        // trailing quote / code-fence stripping needs the whole reply.
+        let cleaned = LLMRefiningHelpers.stripQuotesAndCode(accumulated)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? text : cleaned
     }
 
-    private func refineImpl(_ text: String,
-                            mode: RefineMode,
-                            glossary: String?,
-                            profileSnippet: String?) async -> String {
+    /// v0.7.0 #R4: streaming variant via mlx-swift-lm `streamResponse`. Yields
+    /// raw tokens as they arrive from the model, with one bookkeeping detail —
+    /// a small head buffer (first ~30 chars or until the first newline)
+    /// captures Qwen3's empty `<think>\n\n</think>` bookend so we strip it
+    /// before yielding. Trailing markers (` ``` ` / `"`) can't be stripped in
+    /// streaming without lookahead; `refine`'s batch path handles those at
+    /// the accumulated-string boundary.
+    nonisolated func refineStream(_ text: String,
+                                  language: Language,
+                                  mode: RefineMode,
+                                  glossary: String?,
+                                  profileSnippet: String?) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { [self] in
+                await self.refineStreamImpl(text,
+                                            mode: mode,
+                                            glossary: glossary,
+                                            profileSnippet: profileSnippet,
+                                            continuation: continuation)
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func refineStreamImpl(_ text: String,
+                                  mode: RefineMode,
+                                  glossary: String?,
+                                  profileSnippet: String?,
+                                  continuation: AsyncThrowingStream<String, Error>.Continuation) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return text }
-        guard let systemPrompt = mode.systemPrompt else { return text }    // .off
+        guard !trimmed.isEmpty else { continuation.finish(); return }
+        guard let systemPrompt = mode.systemPrompt else { continuation.finish(); return }    // .off
         guard ModelStore.isLocalRefinerComplete(atDirectory: modelDirectory) else {
-            Log.llm.warning("LocalMLXRefiner: model not downloaded at \(self.modelDirectory.path, privacy: .public) — returning input unchanged")
-            return text
+            Log.llm.warning("LocalMLXRefiner: model not downloaded at \(self.modelDirectory.path, privacy: .public) — finishing empty stream")
+            continuation.finish()
+            return
         }
 
         let finalSystem = LLMRefiningHelpers.compose(
@@ -76,21 +121,43 @@ actor LocalMLXRefiner: LLMRefining {
                 additionalContext: ["enable_thinking": false]
             )
             let inferStart = Date()
-            let reply = try await session.respond(to: trimmed)
+
+            var head = ""
+            var headFlushed = false
+            var totalChars = 0
+            for try await chunk in session.streamResponse(to: trimmed) {
+                totalChars += chunk.count
+                if headFlushed {
+                    continuation.yield(chunk)
+                } else {
+                    head += chunk
+                    // 30 chars or a newline is enough to know whether the
+                    // optional `<think>\n\n</think>` bookend has been
+                    // captured — once past that we can yield raw.
+                    if head.count >= 30 || head.contains("\n") {
+                        let cleaned = LLMRefiningHelpers.stripEmptyThinkBlock(head)
+                        if !cleaned.isEmpty { continuation.yield(cleaned) }
+                        head = ""
+                        headFlushed = true
+                    }
+                }
+            }
+            // Short replies that ended before the head threshold — flush
+            // whatever's in the buffer, post-strip.
+            if !headFlushed {
+                let cleaned = LLMRefiningHelpers.stripEmptyThinkBlock(head)
+                if !cleaned.isEmpty { continuation.yield(cleaned) }
+            }
+
             let inferMs = Int(Date().timeIntervalSince(inferStart) * 1000)
-            let cleaned = LLMRefiningHelpers.stripEmptyThinkBlock(reply)
-                .pipe(LLMRefiningHelpers.stripQuotesAndCode)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            // .notice so `log stream` (no `--level info` needed) surfaces
-            // refine latency by default — the user's main signal when
-            // dogfooding the local refiner. Format mirrors LatencyTracker:
-            // load_ms is the cold-load contribution (0 once warm), infer_ms
-            // is the actual generation cost.
-            Log.llm.notice("LocalRefined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars in load_ms=\(loadMs, privacy: .public) infer_ms=\(inferMs, privacy: .public)")
-            return cleaned.isEmpty ? text : cleaned
+            // Format mirrors v0.6.3's `LocalRefined` log line so existing
+            // dogfood tooling keeps parsing; `_stream` suffix tags the new
+            // generation path.
+            Log.llm.notice("LocalRefined_stream (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(totalChars, privacy: .public) chars in load_ms=\(loadMs, privacy: .public) infer_ms=\(inferMs, privacy: .public)")
+            continuation.finish()
         } catch {
-            Log.llm.warning("Local refine failed: \(String(describing: error), privacy: .public)")
-            return text
+            Log.llm.warning("Local refine stream failed: \(String(describing: error), privacy: .public)")
+            continuation.finish(throwing: error)
         }
     }
 
@@ -145,9 +212,3 @@ actor LocalMLXRefiner: LLMRefining {
     }
 }
 
-private extension String {
-    /// Pipe-through helper so the post-process chain reads top-down.
-    func pipe(_ transform: (String) -> String) -> String {
-        transform(self)
-    }
-}
