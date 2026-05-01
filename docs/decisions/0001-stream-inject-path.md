@@ -49,7 +49,7 @@ Cmd+V in Notion at 50 ms intervals creates one block per paste. Don't try to eng
 **Positive**:
 - `TextInjector` only needs one new entry point (`injectIncremental(stream:)` consuming `AsyncSequence<String>`); no method-selection plumbing.
 - `LLMRefining.refineStream` protocol can ship without conditioning on inject capability.
-- Existing single-shot `inject(_:)` stays intact for batch path / raw-first / Notion fallback.
+- Existing single-shot `inject(_:)` stays intact for batch path / Notion fallback. (Raw-first removed during v0.7.0 dogfood; streaming covers the same low-latency niche better.)
 
 **Negative**:
 - Notion users see the streaming UX silently fall back to batch. Cosmetic, but undocumented from the user's perspective. v0.7.0 release notes should mention it.

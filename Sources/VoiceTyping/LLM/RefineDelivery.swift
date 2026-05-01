@@ -1,27 +1,26 @@
 import Foundation
 
-/// v0.7.0 #R7: how refined text reaches the focused app. Replaces the
-/// pre-v0.7.0 `rawFirstEnabled` boolean — three modes are mutually exclusive
-/// at the type level so the UI can render a single picker instead of two
-/// toggles with hidden interaction rules.
+/// v0.7.0 #R7: how refined text reaches the focused app. Two modes,
+/// mutually exclusive at the type level so the UI is a simple two-segment
+/// picker.
 ///
 /// **streaming** (default) — `refineStream` yields delta chunks, injector
 /// pastes at sentence/word boundaries as they arrive (ADR 0001). Best
 /// perceived latency. Auto-falls back to `.batch` for `notion.id` per the
 /// inject spike findings.
 ///
-/// **rawFirst** — pastes raw ASR immediately, refines in background, then
-/// Cmd+Z + repaste with refined text if the focus is still in the same app.
-/// Pre-v0.7.0 fast-path. Trades a visible flicker for the lowest possible
-/// time-to-first-text, useful on slow networks / cold local refiner loads.
+/// **batch** — wait for the full refine, then paste once. Slower UX but
+/// cleanest output — also the implicit fallback for bundle IDs that don't
+/// tolerate chunked Cmd+V (Notion block-splitting in particular).
 ///
-/// **batch** — wait for the full refine, then paste once. The slowest UX
-/// but the cleanest output — also the implicit fallback when streaming
-/// would misbehave (Notion block-splitting, bundle IDs we know don't tolerate
-/// chunked Cmd+V well).
+/// Pre-v0.7.0's `rawFirst` mode (paste raw immediately, refine in
+/// background, Cmd+Z + repaste refined) was dropped during v0.7.0 dogfood.
+/// Streaming now provides the same time-to-first-text win without the
+/// flicker, the IME-fragile Cmd+Z replace, or the dual code path. Existing
+/// users who had `rawFirstEnabled=true` migrate to `.streaming` on first
+/// v0.7.0 launch.
 enum RefineDelivery: String, CaseIterable, Codable, Sendable, Identifiable {
     case streaming
-    case rawFirst
     case batch
 
     var id: String { rawValue }
@@ -29,7 +28,6 @@ enum RefineDelivery: String, CaseIterable, Codable, Sendable, Identifiable {
     var displayName: String {
         switch self {
         case .streaming: return "Streaming"
-        case .rawFirst:  return "Raw-first"
         case .batch:     return "Batch"
         }
     }
@@ -37,7 +35,6 @@ enum RefineDelivery: String, CaseIterable, Codable, Sendable, Identifiable {
     var summary: String {
         switch self {
         case .streaming: return "Refine and paste in real time. Best UX."
-        case .rawFirst:  return "Paste raw immediately, replace with refined when ready."
         case .batch:     return "Wait for the full refine, then paste once."
         }
     }

@@ -85,8 +85,8 @@ extension AppDelegate {
         //   progressively as user speaks. Free locally; messier Cmd+Z (each
         //   chunk is its own undo step) but acceptable since live users
         //   rarely undo whole sessions.
-        // `RefineDelivery` setting (streaming/rawFirst/batch) is ignored in
-        // live mode — the path is determined by `state.localRefinerEnabled`.
+        // `RefineDelivery` setting (streaming / batch) is ignored in live
+        // mode — the path is determined by `state.localRefinerEnabled`.
         // ADR 0001 documents the choice.
         let refineMode = state.refineMode
         // v0.7.0 #R9 redo bug-fix: gate via `state.refinerReady` not raw

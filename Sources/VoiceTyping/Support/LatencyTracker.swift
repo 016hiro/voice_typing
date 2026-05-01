@@ -40,10 +40,11 @@ final class LatencyTracker: @unchecked Sendable {
         return Int(((b - a) * 1000).rounded())
     }
 
-    /// `delivery` is one of `RefineDelivery.rawValue` (streaming/rawFirst/
-    /// batch) or `"live"` for live-mode runs that skip refine entirely.
-    /// v0.7.0 #R6 generalized the pre-existing `rawFirst: Bool` field —
-    /// dogfood log parsers should read `delivery=...` instead.
+    /// `delivery` is one of `RefineDelivery.rawValue` (streaming / batch)
+    /// or `"live"` for live-mode runs. v0.7.0 #R6 generalized the pre-
+    /// existing `rawFirst: Bool` field — dogfood log parsers should read
+    /// `delivery=...` instead. (Raw-first was dropped during v0.7.0
+    /// dogfood; streaming covered the same use case better.)
     ///
     /// `overrideLlmMs` (#R9 redo follow-up) — for the local-per-segment
     /// live path the refine happens inside `liveInjectTask` (detached,

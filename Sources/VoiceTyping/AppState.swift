@@ -60,10 +60,11 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(refineMode.rawValue, forKey: "refineMode") }
     }
 
-    /// v0.7.0 #R7: how refined text reaches the focused app. Three mutually-
+    /// v0.7.0 #R7: how refined text reaches the focused app. Two mutually-
     /// exclusive modes — see `RefineDelivery` for semantics. Replaces the
-    /// pre-v0.7.0 `rawFirstEnabled` boolean (migration in `init` reads the
-    /// old key and maps `true → .rawFirst`, `false/missing → .streaming`).
+    /// pre-v0.7.0 `rawFirstEnabled` boolean — users on the old `rawFirst`
+    /// path migrate to `.streaming` on first v0.7.0 launch (raw-first was
+    /// dropped during dogfood; streaming wins on every dimension).
     @Published var refineDelivery: RefineDelivery {
         didSet { UserDefaults.standard.set(refineDelivery.rawValue, forKey: "refineDelivery") }
     }
@@ -214,14 +215,14 @@ final class AppState: ObservableObject {
             self.refineMode = loadedConfig.enabled ? .conservative : .off
         }
 
-        // v0.7.0 #R7 migration: prefer the new `refineDelivery` key; fall back
-        // to the legacy `rawFirstEnabled` boolean (true → .rawFirst). Fresh
-        // installs land on `.streaming` — the v0.7.0 default UX.
+        // v0.7.0 #R7 migration: prefer the new `refineDelivery` key. Pre-
+        // v0.7.0 `rawFirstEnabled=true` users migrate to `.streaming` —
+        // raw-first was dropped during v0.7.0 dogfood (streaming gives the
+        // same low-latency win without the flicker / Cmd+Z fragility).
+        // Fresh installs land on `.streaming`.
         if let deliveryRaw = ud.string(forKey: "refineDelivery"),
            let delivery = RefineDelivery(rawValue: deliveryRaw) {
             self.refineDelivery = delivery
-        } else if ud.object(forKey: "rawFirstEnabled") as? Bool == true {
-            self.refineDelivery = .rawFirst
         } else {
             self.refineDelivery = .streaming
         }

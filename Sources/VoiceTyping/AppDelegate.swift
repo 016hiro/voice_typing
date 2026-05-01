@@ -728,8 +728,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let llmConfig = state.llmConfig
         // v0.7.0 #R6/#R7: pick the refine delivery mode and apply the
         // streaming deny-list (Notion → batch, see ADR 0001) before
-        // dispatching. `rawFirst` survives only as the legacy log/capture
-        // flag (the persisted toggle is gone).
+        // dispatching.
         let delivery = RefineDelivery.resolved(state.refineDelivery, bundleID: frontmostBundleID)
         // Streaming is opt-in and Whisper has no streaming engine. If the toggle is on but
         // the active backend is Whisper, fall through to the batch path silently — the
@@ -912,19 +911,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         tracker: tracker,
                         captureWriter: captureWriter
                     )
-                case .rawFirst:
-                    await self.injectRawFirstThenRefine(
-                        raw: trimmed,
-                        mode: mode,
-                        language: language,
-                        dictEntries: dictEntries,
-                        llmConfig: llmConfig,
-                        backend: backend,
-                        bundleID: frontmostBundleID,
-                        profileSnippet: profileSnippet,
-                        tracker: tracker,
-                        captureWriter: captureWriter
-                    )
                 case .batch:
                     await self.injectWaitingForRefine(
                         raw: trimmed,
@@ -942,7 +928,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let injMs = Int(Date().timeIntervalSince(injStart) * 1000)
             // Batch-mode injection record. Status is always `.ok` because the
-            // injectWaitingForRefine / injectRawFirstThenRefine paths don't
+            // injectWaitingForRefine / injectStreamingRefine paths don't
             // surface a failure signal — if the inject failed, the user would
             // see no text appear and the writer's audio.wav + segments.jsonl
             // are still useful for diagnosis.
@@ -1179,91 +1165,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    /// Raw-first: paste ASR output now, start refiner in parallel, replace later
-    /// via Cmd+Z + re-paste IF the user hasn't moved on.
-    private func injectRawFirstThenRefine(
-        raw: String,
-        mode: RefineMode,
-        language: Language,
-        dictEntries: [DictionaryEntry],
-        llmConfig: LLMConfig,
-        backend: ASRBackend,
-        bundleID: String?,
-        profileSnippet: String?,
-        tracker: LatencyTracker,
-        captureWriter: DebugCaptureWriter?
-    ) async {
-        // Step 1: paste raw immediately.
-        tracker.mark(.injectStart)
-        await self.injector.inject(raw)
-        tracker.mark(.injectEnd)
-
-        await MainActor.run {
-            self.capsuleWindow.hide()
-            self.state.status = .idle
-        }
-
-        // Step 2: refine in the background.
-        let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
-        // v0.6.3 #R8: capture refine I/O. Same snapshot pattern as the
-        // post-record path above — backend label captured before await so
-        // mid-flight Settings flips don't mislabel the record. The writer
-        // is the *local* one threaded in from pipelineTask (see comment in
-        // injectWaitingForRefine for why `self.currentDebugWriter` doesn't
-        // work here).
-        let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }
-        let refineStarted = Date()
-        tracker.mark(.llmStart)
-        let refined = await self.refiner.refine(
-            raw,
-            language: language,
-            mode: mode,
-            glossary: glossary,
-            profileSnippet: profileSnippet
-        )
-        tracker.mark(.llmEnd)
-        captureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
-            timestamp: refineStarted,
-            input: raw,
-            output: refined,
-            mode: mode.rawValue,
-            backend: refineCaptureBackend,
-            latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
-            glossary: glossary,
-            profileSnippet: profileSnippet,
-            rawFirst: true
-        ))
-
-        let trimmedRefined = refined.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Step 3: if refiner changed nothing or still in the same app, try to replace.
-        let unchanged = trimmedRefined == raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentBundleID = await MainActor.run { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
-        let focusSafe = (currentBundleID != nil) && (currentBundleID == bundleID)
-
-        let llmHits = GlossaryBuilder.matchedEntryIDs(in: trimmedRefined, entries: dictEntries)
-        await MainActor.run { self.state.noteDictionaryMatches(llmHits) }
-
-        if !unchanged && focusSafe {
-            // Undo the raw paste, then paste refined. Uses Cmd+Z which all cocoa
-            // text fields honor; on failure we simply leave the raw output in place.
-            await self.replaceLastInjection(with: trimmedRefined)
-        } else if !focusSafe {
-            Log.app.info("Raw-first refine skipped rewrite: focus moved from \(bundleID ?? "nil", privacy: .public) to \(currentBundleID ?? "nil", privacy: .public)")
-        }
-
-        tracker.log(
-            backend: backend.rawValue,
-            mode: mode.rawValue,
-            dictEntries: dictEntries.count,
-            delivery: RefineDelivery.rawFirst.rawValue
-        )
-    }
-
     /// Simulates Cmd+Z `undoSteps` times (to remove the previous N pastes)
-    /// then pastes `refined`. v0.7.0 #R9 generalized the pre-existing
-    /// single-undo helper for live-mode session-end replace, where N >= 1
-    /// per-segment pastes need to be undone before the refined text lands.
+    /// then pastes `refined`. Sole caller is the live-mode cloud
+    /// session-end batch refine path, where N = number of per-segment raw
+    /// pastes that need to be undone before the refined session text
+    /// lands. v0.7.0 raw-first removal: the pre-existing N=1 caller is
+    /// gone, but we keep the default for API symmetry / potential future
+    /// callers.
+    ///
+    /// **Known fragility**: Cmd+Z is sent without IME bypass. CJK input
+    /// methods (Pinyin, Wubi) sometimes intercept Cmd+Z for their own
+    /// composition undo, so live-mode cloud path may APPEND refined text
+    /// after raw rather than replacing it when CJK IME is active. Not
+    /// fixed in v0.7.0 because cloud users are a minority and the local
+    /// per-segment path doesn't go through here at all.
     private func replaceLastInjection(with refined: String, undoSteps: Int = 1) async {
         guard undoSteps > 0 else {
             await self.injector.inject(refined)
