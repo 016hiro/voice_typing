@@ -4,12 +4,15 @@ import Carbon.HIToolbox
 /// Outcome of a streaming inject call. `charsInjected` reflects what was
 /// actually pasted into the focused app — a partial paste on cancellation
 /// stays in the target app (we can't recall a Cmd+V), so the count tracks
-/// reality rather than intent. Caller uses this for logging / latency
-/// tracking. `cancelled` distinguishes user-driven Esc / focus loss from
+/// reality rather than intent. `accumulated` is the full text the stream
+/// yielded (regardless of flush state at cancel time) — useful for capture
+/// records that need the LLM's complete output even when the user cancelled
+/// mid-paste. `cancelled` distinguishes user-driven Esc / focus loss from
 /// a clean stream end. `streamError` is whatever the upstream `refineStream`
 /// threw — `nil` on clean finish or cancellation.
 struct InjectIncrementalResult {
     let charsInjected: Int
+    let accumulated: String
     let cancelled: Bool
     let streamError: Error?
 }
@@ -94,6 +97,7 @@ final class TextInjector {
         }
 
         var pending = ""
+        var accumulated = ""
         var charsInjected = 0
         var cancelled = false
         var streamError: Error?
@@ -101,6 +105,7 @@ final class TextInjector {
         do {
             for try await chunk in stream {
                 try Task.checkCancellation()
+                accumulated += chunk
                 pending += chunk
                 if Self.shouldFlush(pending) {
                     let toFlush = pending
@@ -136,8 +141,9 @@ final class TextInjector {
         }
         Self.restore(pasteboard, from: snapshot)
 
-        Log.inject.info("Incremental injected \(charsInjected, privacy: .public) chars cancelled=\(cancelled, privacy: .public) errored=\(streamError != nil, privacy: .public)")
+        Log.inject.info("Incremental injected \(charsInjected, privacy: .public) chars (accumulated=\(accumulated.count, privacy: .public)) cancelled=\(cancelled, privacy: .public) errored=\(streamError != nil, privacy: .public)")
         return InjectIncrementalResult(charsInjected: charsInjected,
+                                       accumulated: accumulated,
                                        cancelled: cancelled,
                                        streamError: streamError)
     }

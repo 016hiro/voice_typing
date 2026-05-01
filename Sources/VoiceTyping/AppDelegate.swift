@@ -723,7 +723,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let mode = state.refineMode
         let llmConfig = state.llmConfig
-        let rawFirst = state.rawFirstEnabled
+        // v0.7.0 #R6/#R7: pick the refine delivery mode and apply the
+        // streaming deny-list (Notion → batch, see ADR 0001) before
+        // dispatching. `rawFirst` survives only as the legacy log/capture
+        // flag (the persisted toggle is gone).
+        let delivery = RefineDelivery.resolved(state.refineDelivery, bundleID: frontmostBundleID)
         // Streaming is opt-in and Whisper has no streaming engine. If the toggle is on but
         // the active backend is Whisper, fall through to the batch path silently — the
         // Settings UI already disables the toggle in that case. Irrelevant when live
@@ -768,7 +772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     backend: backend.rawValue,
                     mode: "live",  // refine is skipped in live mode
                     dictEntries: dictEntries.count,
-                    rawFirst: false
+                    delivery: "live"
                 )
                 captureWriter?.finalize(audio: buffer)
                 return
@@ -821,33 +825,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let willRefine = (mode.systemPrompt != nil) && llmConfig.hasCredentials
 
             let injStart = Date()
-            if willRefine && rawFirst {
-                // Raw-first: inject raw immediately, refine in background, replace if safe.
-                await self.injectRawFirstThenRefine(
+            if !willRefine {
+                // No refine — straight inject of raw. delivery is moot.
+                await self.injectWaitingForRefine(
                     raw: trimmed,
+                    willRefine: false,
                     mode: mode,
                     language: language,
                     dictEntries: dictEntries,
                     llmConfig: llmConfig,
                     backend: backend,
-                    bundleID: frontmostBundleID,
                     profileSnippet: profileSnippet,
                     tracker: tracker,
                     captureWriter: captureWriter
                 )
             } else {
-                await self.injectWaitingForRefine(
-                    raw: trimmed,
-                    willRefine: willRefine,
-                    mode: mode,
-                    language: language,
-                    dictEntries: dictEntries,
-                    llmConfig: llmConfig,
-                    backend: backend,
-                    profileSnippet: profileSnippet,
-                    tracker: tracker,
-                    captureWriter: captureWriter
-                )
+                switch delivery {
+                case .streaming:
+                    await self.injectStreamingRefine(
+                        raw: trimmed,
+                        mode: mode,
+                        language: language,
+                        dictEntries: dictEntries,
+                        backend: backend,
+                        profileSnippet: profileSnippet,
+                        tracker: tracker,
+                        captureWriter: captureWriter
+                    )
+                case .rawFirst:
+                    await self.injectRawFirstThenRefine(
+                        raw: trimmed,
+                        mode: mode,
+                        language: language,
+                        dictEntries: dictEntries,
+                        llmConfig: llmConfig,
+                        backend: backend,
+                        bundleID: frontmostBundleID,
+                        profileSnippet: profileSnippet,
+                        tracker: tracker,
+                        captureWriter: captureWriter
+                    )
+                case .batch:
+                    await self.injectWaitingForRefine(
+                        raw: trimmed,
+                        willRefine: true,
+                        mode: mode,
+                        language: language,
+                        dictEntries: dictEntries,
+                        llmConfig: llmConfig,
+                        backend: backend,
+                        profileSnippet: profileSnippet,
+                        tracker: tracker,
+                        captureWriter: captureWriter
+                    )
+                }
             }
             let injMs = Int(Date().timeIntervalSince(injStart) * 1000)
             // Batch-mode injection record. Status is always `.ok` because the
@@ -960,7 +991,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backend: backend.rawValue,
             mode: mode.rawValue,
             dictEntries: dictEntries.count,
+            delivery: RefineDelivery.batch.rawValue
+        )
+    }
+
+    /// v0.7.0 #R6: streaming refine path. Drives `refineStream` directly into
+    /// `injector.injectIncremental(stream:)` — chunks land in the focused app
+    /// at sentence/word boundaries as the LLM produces them. No raw-first
+    /// fallback, no post-hoc replace; user sees forward-only writing.
+    /// Cancellation (Esc / focus loss in #R8) is wired by cancelling
+    /// `pipelineTask`, which propagates a CancellationError into the stream
+    /// iterator inside `injectIncremental` — the in-flight pending buffer
+    /// is dropped (see `TextInjector.injectIncremental` for the contract).
+    private func injectStreamingRefine(
+        raw: String,
+        mode: RefineMode,
+        language: Language,
+        dictEntries: [DictionaryEntry],
+        backend: ASRBackend,
+        profileSnippet: String?,
+        tracker: LatencyTracker,
+        captureWriter: DebugCaptureWriter?
+    ) async {
+        await MainActor.run {
+            self.state.status = .refining
+        }
+        let glossary = GlossaryBuilder.buildLLMGlossary(from: dictEntries)
+        let refineCaptureBackend = await MainActor.run { self.state.localRefinerEnabled ? "local" : "cloud" }
+        let refineStarted = Date()
+
+        // Streaming overlaps the llm and inject phases — both bounds match
+        // the life of refineStream consumption.
+        tracker.mark(.llmStart)
+        tracker.mark(.injectStart)
+
+        let stream = self.refiner.refineStream(
+            raw,
+            language: language,
+            mode: mode,
+            glossary: glossary,
+            profileSnippet: profileSnippet
+        )
+        let result = await self.injector.injectIncremental(stream: stream)
+
+        tracker.mark(.injectEnd)
+        tracker.mark(.llmEnd)
+
+        captureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
+            timestamp: refineStarted,
+            input: raw,
+            output: result.accumulated,
+            mode: mode.rawValue,
+            backend: refineCaptureBackend,
+            latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
+            glossary: glossary,
+            profileSnippet: profileSnippet,
             rawFirst: false
+        ))
+
+        let llmHits = GlossaryBuilder.matchedEntryIDs(in: result.accumulated, entries: dictEntries)
+        await MainActor.run {
+            self.state.noteDictionaryMatches(llmHits)
+            self.capsuleWindow.hide()
+            self.state.status = .idle
+        }
+
+        Log.app.notice("StreamingRefine chars=\(result.charsInjected, privacy: .public) accumulated=\(result.accumulated.count, privacy: .public) cancelled=\(result.cancelled, privacy: .public) errored=\(result.streamError != nil, privacy: .public)")
+
+        tracker.log(
+            backend: backend.rawValue,
+            mode: mode.rawValue,
+            dictEntries: dictEntries.count,
+            delivery: RefineDelivery.streaming.rawValue
         )
     }
 
@@ -1041,7 +1143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backend: backend.rawValue,
             mode: mode.rawValue,
             dictEntries: dictEntries.count,
-            rawFirst: true
+            delivery: RefineDelivery.rawFirst.rawValue
         )
     }
 

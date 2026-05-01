@@ -60,11 +60,12 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(refineMode.rawValue, forKey: "refineMode") }
     }
 
-    /// v0.3: when true, paste raw ASR output immediately and replace with refined
-    /// text in the background once the LLM returns. Trades visual jitter for
-    /// dramatically reduced perceived latency. Off by default.
-    @Published var rawFirstEnabled: Bool {
-        didSet { UserDefaults.standard.set(rawFirstEnabled, forKey: "rawFirstEnabled") }
+    /// v0.7.0 #R7: how refined text reaches the focused app. Three mutually-
+    /// exclusive modes — see `RefineDelivery` for semantics. Replaces the
+    /// pre-v0.7.0 `rawFirstEnabled` boolean (migration in `init` reads the
+    /// old key and maps `true → .rawFirst`, `false/missing → .streaming`).
+    @Published var refineDelivery: RefineDelivery {
+        didSet { UserDefaults.standard.set(refineDelivery.rawValue, forKey: "refineDelivery") }
     }
 
     /// v0.4.2 experimental: route transcription through VAD-segmented streaming
@@ -192,7 +193,17 @@ final class AppState: ObservableObject {
             self.refineMode = loadedConfig.enabled ? .conservative : .off
         }
 
-        self.rawFirstEnabled = ud.object(forKey: "rawFirstEnabled") as? Bool ?? false
+        // v0.7.0 #R7 migration: prefer the new `refineDelivery` key; fall back
+        // to the legacy `rawFirstEnabled` boolean (true → .rawFirst). Fresh
+        // installs land on `.streaming` — the v0.7.0 default UX.
+        if let deliveryRaw = ud.string(forKey: "refineDelivery"),
+           let delivery = RefineDelivery(rawValue: deliveryRaw) {
+            self.refineDelivery = delivery
+        } else if ud.object(forKey: "rawFirstEnabled") as? Bool == true {
+            self.refineDelivery = .rawFirst
+        } else {
+            self.refineDelivery = .streaming
+        }
         self.streamingEnabled = ud.object(forKey: "streamingEnabled") as? Bool ?? false
         self.liveStreamingEnabled = ud.object(forKey: "liveStreamingEnabled") as? Bool ?? false
 

@@ -16,7 +16,7 @@ import os
 ///     t.mark(.injectStart)
 ///     // ... paste ...
 ///     t.mark(.injectEnd)
-///     t.log(backend: "qwen-1.7b", mode: "aggressive", dictEntries: 14, rawFirst: false)
+///     t.log(backend: "qwen-1.7b", mode: "aggressive", dictEntries: 14, delivery: "streaming")
 final class LatencyTracker: @unchecked Sendable {
 
     enum Stage: String {
@@ -40,7 +40,11 @@ final class LatencyTracker: @unchecked Sendable {
         return Int(((b - a) * 1000).rounded())
     }
 
-    func log(backend: String, mode: String, dictEntries: Int, rawFirst: Bool) {
+    /// `delivery` is one of `RefineDelivery.rawValue` (streaming/rawFirst/
+    /// batch) or `"live"` for live-mode runs that skip refine entirely.
+    /// v0.7.0 #R6 generalized the pre-existing `rawFirst: Bool` field —
+    /// dogfood log parsers should read `delivery=...` instead.
+    func log(backend: String, mode: String, dictEntries: Int, delivery: String) {
         let asr    = ms(.asrStart, .asrEnd)
         let llm    = ms(.llmStart, .llmEnd)
         let inject = ms(.injectStart, .injectEnd)
@@ -50,7 +54,7 @@ final class LatencyTracker: @unchecked Sendable {
         // summary metric, not debug spam — one line per completed utterance,
         // worth first-class visibility in Console.
         Log.app.notice(
-            "latency backend=\(backend, privacy: .public) mode=\(mode, privacy: .public) dict=\(dictEntries, privacy: .public) rawFirst=\(rawFirst, privacy: .public) asr_ms=\(asr, privacy: .public) llm_ms=\(llm, privacy: .public) inject_ms=\(inject, privacy: .public) total_ms=\(total, privacy: .public)"
+            "latency backend=\(backend, privacy: .public) mode=\(mode, privacy: .public) dict=\(dictEntries, privacy: .public) delivery=\(delivery, privacy: .public) asr_ms=\(asr, privacy: .public) llm_ms=\(llm, privacy: .public) inject_ms=\(inject, privacy: .public) total_ms=\(total, privacy: .public)"
         )
     }
 }

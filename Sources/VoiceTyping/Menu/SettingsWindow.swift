@@ -970,16 +970,27 @@ private struct LLMTab: View {
                     .foregroundStyle(LG.textDim)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Toggle(isOn: $state.rawFirstEnabled) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Paste raw first, refine in background")
-                            .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(LG.text)
-                            .fx()
-                        Text("Lower perceived latency. Avoid in chat apps that auto-send on Enter.")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(LG.textDim)
+                // v0.7.0 #R7: three mutually-exclusive delivery modes — see
+                // RefineDelivery for semantics. Replaces the pre-v0.7.0
+                // "Paste raw first" toggle. Notion runs auto-fall-back from
+                // streaming to batch in code (ADR 0001) — not surfaced here
+                // because per-app overrides aren't user-facing.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Delivery")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(LG.text)
+                        .fx()
+                    Picker("", selection: $state.refineDelivery) {
+                        ForEach(RefineDelivery.allCases) { d in
+                            Text(d.displayName).tag(d)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text(state.refineDelivery.summary)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(LG.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .disabled(state.refineMode == .off)
                 .padding(.top, 2)
