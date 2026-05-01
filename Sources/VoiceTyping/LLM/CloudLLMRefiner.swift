@@ -32,29 +32,63 @@ final class CloudLLMRefiner: LLMRefining {
                 profileSnippet: String?) async -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
-        guard let systemPrompt = mode.systemPrompt else { return text }    // .off
+        guard mode.systemPrompt != nil else { return text }    // .off
         guard config.hasCredentials else { return text }
 
-        let finalSystem = LLMRefiningHelpers.compose(
-            systemPrompt: systemPrompt,
-            profileSnippet: profileSnippet,
-            glossary: glossary
-        )
-
+        let t0 = Date()
+        var accumulated = ""
         do {
-            let t0 = Date()
-            let reply = try await chat(
-                system: finalSystem,
-                user: trimmed
-            )
-            let httpMs = Int(Date().timeIntervalSince(t0) * 1000)
-            let cleaned = LLMRefiningHelpers.stripQuotesAndCode(reply)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            Log.llm.notice("CloudRefined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars in http_ms=\(httpMs, privacy: .public)")
-            return cleaned.isEmpty ? text : cleaned
+            for try await chunk in refineStream(text,
+                                                language: language,
+                                                mode: mode,
+                                                glossary: glossary,
+                                                profileSnippet: profileSnippet) {
+                accumulated += chunk
+            }
         } catch {
             Log.llm.warning("Cloud refine failed: \(String(describing: error), privacy: .public)")
             return text
+        }
+        let httpMs = Int(Date().timeIntervalSince(t0) * 1000)
+        let cleaned = LLMRefiningHelpers.stripQuotesAndCode(accumulated)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        Log.llm.notice("CloudRefined (\(mode.rawValue, privacy: .public)) \(trimmed.count, privacy: .public) → \(cleaned.count, privacy: .public) chars in http_ms=\(httpMs, privacy: .public)")
+        return cleaned.isEmpty ? text : cleaned
+    }
+
+    /// v0.7.0 #R3: streaming variant — yields SSE delta chunks raw (no
+    /// stripping; the bookend `stripQuotesAndCode` only fires on the batch
+    /// `refine` path because mid-stream we can't tell where the boundary is
+    /// without lookahead). Pre-flight guards mirror `refine` exactly so a
+    /// `mode == .off` / no-creds caller gets an immediately-finished empty
+    /// stream instead of an error.
+    func refineStream(_ text: String,
+                      language: Language,
+                      mode: RefineMode,
+                      glossary: String?,
+                      profileSnippet: String?) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task { [self] in
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continuation.finish(); return }
+                guard let systemPrompt = mode.systemPrompt else { continuation.finish(); return }
+                guard self.config.hasCredentials else { continuation.finish(); return }
+
+                let finalSystem = LLMRefiningHelpers.compose(
+                    systemPrompt: systemPrompt,
+                    profileSnippet: profileSnippet,
+                    glossary: glossary
+                )
+                do {
+                    try await self.chatStream(system: finalSystem, user: trimmed) { chunk in
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -67,7 +101,8 @@ final class CloudLLMRefiner: LLMRefining {
         let system = RefineMode.aggressive.systemPrompt ?? "Improve the input text."
         let user = "this is a test sentence with some um typos to fix and—small punctuation issues"
         do {
-            let reply = try await chat(system: system, user: user)
+            var reply = ""
+            try await chatStream(system: system, user: user) { reply += $0 }
             return .ok(sampleReply: reply)
         } catch {
             return .failed(error.localizedDescription)
@@ -76,7 +111,14 @@ final class CloudLLMRefiner: LLMRefining {
 
     // MARK: - HTTP (streaming)
 
-    private func chat(system: String, user: String) async throws -> String {
+    /// SSE consumer — emits each `delta.content` chunk via `onChunk` as it
+    /// arrives. Same network setup as the v0.6.3 batch path; the only
+    /// behavioral change is yielding chunks instead of accumulating into a
+    /// single return value. Throws on HTTP error / mid-stream `error` event /
+    /// stream-closed-empty (preserves the v0.6.3 truncation guard).
+    private func chatStream(system: String,
+                            user: String,
+                            onChunk: (String) -> Void) async throws {
         // Literal pass-through: whatever the user typed in the URL field IS the
         // POST target. No suffix-appending, no auto-stripping. Only defense is
         // trimming whitespace/newlines — pasted keys / URLs often carry a `\n`,
@@ -157,32 +199,30 @@ final class CloudLLMRefiner: LLMRefining {
         // SSE consumer loop. `bytes.lines` yields complete lines without the
         // trailing newline; SSE comments (`: OPENROUTER PROCESSING`) keep the
         // socket warm and are skipped. `data: [DONE]` terminates the stream.
-        var accumulated = ""
         var sawAnyData = false
         for try await line in bytes.lines {
             switch SSEParser.parse(line: line) {
             case .skip:
                 continue
             case .content(let chunk):
-                accumulated += chunk
+                onChunk(chunk)
                 sawAnyData = true
             case .error(let msg):
                 Log.llm.error("LLM streamed error: \(msg, privacy: .public)")
                 throw NSError(domain: "VoiceTyping.LLM", code: 502,
                               userInfo: [NSLocalizedDescriptionKey: msg])
             case .done:
-                return accumulated
+                return
             }
         }
 
         // Stream ended without an explicit `[DONE]`. If we got *some* content,
-        // return it (some providers omit the terminator); otherwise treat as
-        // a truncation error so the caller doesn't paste an empty refine.
-        if sawAnyData {
-            return accumulated
+        // accept it (some providers omit the terminator); otherwise treat as
+        // a truncation error so the caller doesn't end up with no refine.
+        if !sawAnyData {
+            throw NSError(domain: "VoiceTyping.LLM", code: 500,
+                          userInfo: [NSLocalizedDescriptionKey: "Stream closed without any content"])
         }
-        throw NSError(domain: "VoiceTyping.LLM", code: 500,
-                      userInfo: [NSLocalizedDescriptionKey: "Stream closed without any content"])
     }
 
     // MARK: - Helpers
