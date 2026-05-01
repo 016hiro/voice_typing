@@ -30,7 +30,7 @@ _Last updated: 2026-05-01_
 
 ## Next Concrete Step
 
-**v0.7.0 主线**：开 #S1，详化 scope 并写 ADR 锁定决策（流式 inject 方案 / API shape / raw-first 互斥 / Cmd+Z 调研结论）。先 spike #S3 三个 inject 方案（Cmd+V / CGEvent / NSAccessibility），定方案后再展开 #S2 协议改造。
+**v0.7.0 主线**：#R1 spike 收口（Cmd+V incremental 胜出，ADR 0001 落档），下一步 #R2 —— `LLMRefining` 协议加 `refineStream(...) -> AsyncThrowingStream<String, Error>`（yield delta 不是累积值），旧 `refine` 留默认实现保 batch / raw-first 零迁移。然后 #R3 cloud `accumulated += chunk` 改 yield，#R4 local 换 `streamResponse`。
 
 ## Blockers / Open Questions
 
