@@ -6,6 +6,23 @@
 
 _（下个版本的用户可见变更在此累积）_
 
+## v0.7.0 — 2026-05-02
+
+### Added
+- **流式 refine**：refine 现在边生成边 paste，不再"沉默几秒后一次性 paste"。Cloud / Local 两个 backend 都支持。Settings → LLM → "Delivery" picker 选 Streaming（默认）或 Batch
+- **Live 模式 + refine**：长按 Fn 边说边录的模式现在也支持 refine。
+  - 用 **Local refiner** 时：每个 VAD 段独立 refine 并立即出现在目标 app；段间共享一个 chat session，所以"它/that/the cat" 这种跨段指代能保持一致
+  - 用 **Cloud refiner** 时：录完后整段一次性 refine（避免 N 次 API 调用），自动 Cmd+Z 替换录制时的 raw 文本
+- **流式期间可取消**：refine 中按 **Esc** 立即停；切到别的 app（focus 丢失）也立即停。已经 paste 的字符保留
+- **Capsule 状态显示已写字数**：流式 refine 期间 capsule 文字从 "Refining" 变成 "Refining (N chars)"，N 实时累加
+- **Notion 自动降级**：在 Notion 里录音，refine 自动切到一次性 paste（避免 Notion 把每次 paste 当独立 block 创建）。其他 app 不受影响
+
+### Changed
+- **Raw-first 模式移除**：v0.3 引入的"先 paste raw 后台 refine 再 Cmd+Z 替换"模式被砍掉。新的流式 refine 在感知延迟上更好（不闪烁、不需要 Cmd+Z 替换），覆盖了 raw-first 的所有用例。**老用户**：如果你之前开了 Raw-first，升级后会自动切到 Streaming，无需手动调
+
+### Notes
+- 完整开发记录：[`docs/devlog/v0.7.0.md`](docs/devlog/v0.7.0.md)
+
 ## v0.6.4 — 2026-05-01
 
 ### Fixed
