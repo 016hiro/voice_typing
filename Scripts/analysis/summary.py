@@ -47,6 +47,8 @@ def main() -> int:
     profile_hits = 0
     total_segments = 0
     total_injections = 0
+    total_refines = 0
+    sessions_with_refines = 0
     skipped_injections = 0
     live_count = 0
     on_disk = 0
@@ -76,6 +78,11 @@ def main() -> int:
 
         total_segments += int(meta.get("totalSegments", 0))
         total_injections += int(meta.get("totalInjections", 0))
+        # totalRefines absent on pre-v0.6.3 captures; treat as 0.
+        refines_here = int(meta.get("totalRefines") or 0)
+        total_refines += refines_here
+        if refines_here > 0:
+            sessions_with_refines += 1
 
         for inj in load_injections(sd):
             if inj.get("status") == "skipped":
@@ -96,6 +103,10 @@ def main() -> int:
     print(f"Audio total: {audio_total_min:.1f} min")
     print(f"Segments:    {total_segments}  (avg {total_segments / n:.1f}/session)")
     print(f"Injections:  {total_injections}  (avg {total_injections / n:.1f}/session)")
+    print(
+        f"Refines:     {total_refines}  ({sessions_with_refines}/{n} sessions, "
+        f"{fmt_pct(sessions_with_refines, n)})"
+    )
     print(f"On-disk:     {human_bytes(on_disk)}")
     print()
 

@@ -28,7 +28,7 @@ python3 summary.py "$ROOT"
 python3 segment_latency.py "$ROOT"
 ```
 
-## 5 个脚本
+## 6 个脚本
 
 ### `summary.py` — "dogfood pool 够不够"
 
@@ -79,6 +79,23 @@ Per-segment `transcribeMs` 分布 + RTF + cold/warm 对比。
 
 回答："Qwen 在用户硬件上是不是真的 real-time？v0.5.1 的 dl_init 修是不是真消除了 warmup？"
 
+### `refine_quality.py` — "本地 vs 云端 refiner 谁更好" (v0.7.1+)
+
+读 `refines.jsonl`（v0.6.3 #R8 起写盘），按 backend (cloud/local) 切分：调用次数 / latency p50-p99 / 每种 mode 用了哪个 backend / output 相对 input 是变短/相等/变长 / glossary + profile snippet 触发率 / 同 session 既调云端又调本地的 A/B 候选。
+
+回答："local Qwen3.5-4B 跟云端 latency / 改写幅度差多少？是否能把本地默认 ON？"——v0.6.3 backlog 的 cloud↔local 质量比对就靠这个。
+
+```bash
+# 摘要
+python3 refine_quality.py "$ROOT"
+# 抽 10 条 (input → output) 配对人工看质量
+python3 refine_quality.py "$ROOT" --sample 10
+# 复现某次抽样
+python3 refine_quality.py "$ROOT" --sample 10 --seed 42
+```
+
+> **schema 注**：`RefineRecord.rawFirst` 在 v0.7.0 砍掉 raw-first feature 后，新 capture 永远是 `false`；脚本不读这个字段，老 capture 兼容。
+
 ## 共享代码：`_common.py`
 
 5 个脚本共享的迭代器 + 数学 + 格式化 helpers。不直接调用，只 import。修改 schema 时改这一处即可。
@@ -97,7 +114,7 @@ Per-segment `transcribeMs` 分布 + RTF + cold/warm 对比。
 |---|---|---|
 | 不同 VAD config 重跑同一段音频对比分段 | 要加载 Silero VAD + 跑 Swift 推理 | v0.5.3+，单独 Swift CLI |
 | 同一段音频跑 3 个 backend 对比 transcript | 同上 | v0.5.3+，单独 Swift CLI |
-| Refine 质量 / LLM 改动量 | Refine I/O 没 capture | refine 专版 |
+| ~~Refine 质量 / LLM 改动量~~ | ~~Refine I/O 没 capture~~ → v0.6.3 #R8 已加 capture，v0.7.1 加了 `refine_quality.py` | done |
 | 用户改字 / "重新打字率" | 需 OS 级 keystroke 监控其他 app | v0.6.x 或不做 |
 | 时序模式（早晚使用频率等） | 数据有但 v0.5.2 不优先 | 需要时再加 |
 
