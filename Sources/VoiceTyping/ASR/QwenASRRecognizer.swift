@@ -178,13 +178,20 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
                     throw NSError(domain: "VoiceTyping.ASR", code: 1,
                                   userInfo: [NSLocalizedDescriptionKey: "Recognizer not prepared"])
                 }
-                return model.transcribe(
-                    audio: samples,
-                    sampleRate: sr,
+                return TranscribeWatchdog.run(
+                    callsite: "batch",
+                    samples: samples.count,
                     language: lang,
-                    maxTokens: 448,
-                    context: ctx
-                )
+                    contextChars: ctx?.count ?? 0
+                ) {
+                    model.transcribe(
+                        audio: samples,
+                        sampleRate: sr,
+                        language: lang,
+                        maxTokens: 448,
+                        context: ctx
+                    )
+                }
             }
         }.value
 
@@ -211,10 +218,17 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
         guard samples.count >= 400 else { return "" }
         return transcribeLock.withLock { () -> String in
             guard let model = self.model else { return "" }
-            return model.transcribe(
-                audio: samples, sampleRate: 16000,
-                language: language, maxTokens: 448, context: context
-            )
+            return TranscribeWatchdog.run(
+                callsite: "segment-sync",
+                samples: samples.count,
+                language: language,
+                contextChars: context?.count ?? 0
+            ) {
+                model.transcribe(
+                    audio: samples, sampleRate: 16000,
+                    language: language, maxTokens: 448, context: context
+                )
+            }
         }
     }
 
@@ -453,10 +467,17 @@ public extension QwenASRRecognizer {
                 // Same minimum-FFT-window guard as the batch path: <400 samples
                 // crashes WhisperFeatureExtractor's reflect padding.
                 guard segAudio.count >= 400 else { return }
-                let text = asr.transcribe(
-                    audio: segAudio, sampleRate: 16000,
-                    language: lang, maxTokens: 448, context: ctx
-                )
+                let text = TranscribeWatchdog.run(
+                    callsite: "stream-segment",
+                    samples: segAudio.count,
+                    language: lang,
+                    contextChars: ctx?.count ?? 0
+                ) {
+                    asr.transcribe(
+                        audio: segAudio, sampleRate: 16000,
+                        language: lang, maxTokens: 448, context: ctx
+                    )
+                }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
                 // Drop training-data tails (`谢谢观看`, `Thank you.`) and
