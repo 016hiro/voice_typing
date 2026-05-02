@@ -208,6 +208,58 @@ private final class BorderlessKeyWindow: NSWindow {
     }
 }
 
+/// SwiftUI `.sheet` spawns its own NSWindow that does not inherit
+/// `BorderlessKeyWindow`, so the same ⌘A/⌘C/⌘V/⌘X/⌘Z forwarding has to be
+/// re-installed on the sheet for its TextFields to accept paste in our
+/// `.accessory` (no-main-menu) app. Implemented as a local key monitor scoped
+/// to the sheet's lifetime — the sheet is modal, so during presentation only
+/// its first responder receives the routed action.
+private struct PasteboardShortcutsFix: ViewModifier {
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                guard monitor == nil else { return }
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                    guard modifiers.contains(.command),
+                          !modifiers.contains(.control),
+                          !modifiers.contains(.option),
+                          let chars = event.charactersIgnoringModifiers?.lowercased() else {
+                        return event
+                    }
+                    let shift = modifiers.contains(.shift)
+                    let action: Selector
+                    switch chars {
+                    case "a": action = #selector(NSText.selectAll(_:))
+                    case "c": action = #selector(NSText.copy(_:))
+                    case "v": action = #selector(NSText.paste(_:))
+                    case "x": action = #selector(NSText.cut(_:))
+                    case "z": action = shift ? Selector(("redo:")) : Selector(("undo:"))
+                    default:  return event
+                    }
+                    if NSApp.sendAction(action, to: nil, from: nil) {
+                        return nil
+                    }
+                    return event
+                }
+            }
+            .onDisappear {
+                if let m = monitor {
+                    NSEvent.removeMonitor(m)
+                }
+                monitor = nil
+            }
+    }
+}
+
+extension View {
+    fileprivate func pasteboardShortcutsFix() -> some View {
+        modifier(PasteboardShortcutsFix())
+    }
+}
+
 // MARK: - Root SwiftUI view
 
 private struct SettingsView: View {
@@ -1404,6 +1456,7 @@ private struct DictionaryTab: View {
         }
         .sheet(isPresented: $showingAddDialog) {
             editorSheet
+                .pasteboardShortcutsFix()
         }
         .alert(deleteAlertTitle,
                isPresented: .init(
@@ -1720,6 +1773,7 @@ private struct ProfilesTab: View {
         }
         .sheet(isPresented: $showingEditor) {
             editorSheet
+                .pasteboardShortcutsFix()
         }
         .alert(deleteAlertTitle,
                isPresented: .init(
