@@ -44,6 +44,7 @@ def main() -> int:
     by_backend: Counter = Counter()
     by_backend_audio: defaultdict = defaultdict(float)
     by_lang: Counter = Counter()
+    by_build: Counter = Counter()  # v0.7.1: appVersion[@gitCommitSHA] slice
     profile_hits = 0
     total_segments = 0
     total_injections = 0
@@ -71,6 +72,10 @@ def main() -> int:
         by_backend[backend] += 1
         by_backend_audio[backend] += audio
         by_lang[lang] += 1
+        # appVersion[@gitCommitSHA]: SHA absent on pre-v0.7.1 captures.
+        ver = meta.get("appVersion") or "?"
+        sha = meta.get("gitCommitSHA")
+        by_build[f"{ver}@{sha}" if sha else ver] += 1
         if snippet:
             profile_hits += 1
         if live:
@@ -126,6 +131,13 @@ def main() -> int:
     print("Language split:")
     for lang, count in by_lang.most_common():
         print(f"  {lang:<22} {count:>4}  ({fmt_pct(count, n)})")
+    print()
+
+    print("Builds (appVersion[@gitCommitSHA]):")
+    for build, count in by_build.most_common(8):
+        print(f"  {build:<36} {count:>4}  ({fmt_pct(count, n)})")
+    if len(by_build) > 8:
+        print(f"  ... ({len(by_build) - 8} more)")
     print()
 
     print(f"Profile hit rate:    {profile_hits} / {n} sessions ({fmt_pct(profile_hits, n)})")

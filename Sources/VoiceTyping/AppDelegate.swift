@@ -571,7 +571,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 liveMode: useLive,
                 frontmostBundleID: bid,
                 profileSnippet: snippet,
-                asrContext: asrCtx
+                asrContext: asrCtx,
+                keepAliveTicks: asrKeepAlive.tickCountSnapshot
             )
 
             // v0.5.3: if hands-free conditions might fire on Fn↑, wire a VAD
@@ -680,7 +681,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if buffer.samples.count < 400 {
             Log.app.info("stopRecording: buffer too short (\(buffer.samples.count, privacy: .public) samples), skipping ASR")
             cleanUpLiveState()
-            captureWriter?.abort()
+            captureWriter?.abort(keepAliveTicks: asrKeepAlive.tickCountSnapshot)
             flashInfo(message(for: .noSpeech), autoHide: true)
             return
         }
@@ -831,7 +832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     delivery: "live",
                     overrideLlmMs: liveResult.refinedInline ? liveResult.localRefineMs : nil
                 )
-                captureWriter?.finalize(audio: buffer)
+                captureWriter?.finalize(audio: buffer, keepAliveTicks: self.asrKeepAlive.tickCountSnapshot)
                 return
             }
 
@@ -854,7 +855,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
-                captureWriter?.abort()
+                captureWriter?.abort(keepAliveTicks: self.asrKeepAlive.tickCountSnapshot)
                 await MainActor.run {
                     self.flashInfo(self.message(for: .noSpeech), autoHide: true)
                 }
@@ -941,7 +942,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 status: .ok,
                 elapsedMs: injMs
             ))
-            captureWriter?.finalize(audio: buffer)
+            captureWriter?.finalize(audio: buffer, keepAliveTicks: self.asrKeepAlive.tickCountSnapshot)
         }
     }
 

@@ -4,9 +4,13 @@
 
 ## Unreleased
 
+### Fixed
+- **闲置后首次 ASR 卡顿**（v0.6.4 修的同一个 bug，但 v0.6.4 实际没修干净）：v0.6.4 ship 后 dogfood 数据显示 ≥5 s outlier 反而从 2.2% 升到 5.3%，根因是当时的 keep-alive timer 在 release 里被 macOS App Nap 节流，且没人能观测到（log 默认 off）。v0.7.1 加 `ProcessInfo.beginActivity(.userInitiated)` 抑制 App Nap、`NSWorkspace.didWakeNotification` 监听 wake-from-sleep 立即补 tick、timer callback 的 QoS 从 `.background`（最低，可被任意 defer）升到 `.utility`、所有 keep-alive 日志从 `.dev` 升 `.notice`（release 默认可见）
+
 ### Changed
 - **Refine prompt 收紧**（Clean Up + Polish 两档）：明示要把 ASR 倾向输出的中文数字（"九十九" / "三点一四" / "二零二四" / "零点一点一"）转回阿拉伯数字（"99" / "3.14" / "2024" / "0.1.1"），但量词搭配（"三个文件" / "一只猫"）保留中文形态；中英混读时不要把英文术语（Python / Kubernetes / API / JSON）翻译成中文；"这个" 加进 filler / 口吃折叠列表。Polish 这档把"口语化→书面化重写"显式提升为差异点（之前藏在第 6 条"smooth phrasing"里，现在是 #5 主任务，配 "然后呢" / "and then like" 这种例子）
 - **Settings 桌面设置面板里的 sheet（Dictionary / Profile 编辑器）现在支持 ⌘V/⌘C/⌘A/⌘X/⌘Z**：之前在 Add Vocabulary / Add Profile 弹窗里只能键入不能粘贴，因为 sheet 子窗口没继承主面板的快捷键转发
+- **Debug capture meta 加 git commit SHA**（`make build` 时 PlistBuddy 把 `git rev-parse --short=12` 写进 Info.plist `GitCommitSHA`，运行时落到每个 session 的 `meta.json`）：dogfood 分析能按 build 切片，不再仅按 version string 聚合
 
 ### Removed
 - **Refine 档位 "Fix Errors" (conservative) 砍掉**：跟 "Clean Up" 的核心职责重叠（修 ASR 错），保留三档没意义。老用户原 Fix Errors 自动迁到 Clean Up——多一些 filler / 口吃删除，但不会改写措辞或顺序

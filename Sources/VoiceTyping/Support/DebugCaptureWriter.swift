@@ -38,6 +38,11 @@ final class DebugCaptureWriter: @unchecked Sendable {
     struct Meta: Codable {
         let sessionId: String
         let appVersion: String
+        /// v0.7.1: short git SHA injected by `make build` into Info.plist
+        /// (`GitCommitSHA`). Lets `Scripts/analysis/` slice dogfood data by
+        /// build, not just by version string — same `appVersion` can ship
+        /// from multiple commits during patch iteration.
+        let gitCommitSHA: String?
         let startedAt: Date
         var endedAt: Date?
         let backend: String
@@ -46,10 +51,18 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let frontmostBundleID: String?
         let profileSnippet: String?
         let asrContextChars: Int
+        /// v0.7.1: keep-alive timer's tick counter snapshot at session begin.
+        /// Combined with process uptime (= `startedAt - launchedAt` ≈ this
+        /// session's `startedAt` minus app launch) tells us "should there
+        /// have been ticks by now, and were there?" — answers the v0.6.4
+        /// dogfood question "is keep-alive firing at all?" without requiring
+        /// Developer logging to be on.
+        let keepAliveTicksAtStart: Int?
         var totalAudioSec: Double?
         var totalSegments: Int?
         var totalInjections: Int?
         var totalRefines: Int?       // v0.6.3 #R8 — populated by finalize/abort
+        var keepAliveTicksAtEnd: Int?  // v0.7.1: snapshot at session end
     }
 
     struct SegmentRecord: Codable {
@@ -117,7 +130,8 @@ final class DebugCaptureWriter: @unchecked Sendable {
         liveMode: Bool,
         frontmostBundleID: String?,
         profileSnippet: String?,
-        asrContext: String?
+        asrContext: String?,
+        keepAliveTicks: Int? = nil
     ) -> DebugCaptureWriter? {
         guard state.debugCaptureEnabled else { return nil }
         let started = Date()
@@ -130,10 +144,13 @@ final class DebugCaptureWriter: @unchecked Sendable {
             Log.app.warning("DebugCaptureWriter: failed to create session dir: \(error.localizedDescription, privacy: .public)")
             return nil
         }
-        let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?"
+        let info = Bundle.main.infoDictionary
+        let appVersion = (info?["CFBundleShortVersionString"] as? String) ?? "?"
+        let gitCommitSHA = info?["GitCommitSHA"] as? String
         let meta = Meta(
             sessionId: sessionId,
             appVersion: appVersion,
+            gitCommitSHA: gitCommitSHA,
             startedAt: started,
             endedAt: nil,
             backend: backend.rawValue,
@@ -142,10 +159,12 @@ final class DebugCaptureWriter: @unchecked Sendable {
             frontmostBundleID: frontmostBundleID,
             profileSnippet: profileSnippet,
             asrContextChars: asrContext?.count ?? 0,
+            keepAliveTicksAtStart: keepAliveTicks,
             totalAudioSec: nil,
             totalSegments: nil,
             totalInjections: nil,
-            totalRefines: nil
+            totalRefines: nil,
+            keepAliveTicksAtEnd: nil
         )
         return DebugCaptureWriter(folder: folder, meta: meta)
     }
@@ -212,7 +231,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// Write audio.wav + meta.json. Subsequent appends are no-ops. Synchronous
     /// from the queue's perspective (other appends already enqueued before
     /// `finalize` will land first; appends enqueued after will be dropped).
-    func finalize(audio: AudioBuffer) {
+    func finalize(audio: AudioBuffer, keepAliveTicks: Int? = nil) {
         queue.async {
             guard !self.finalized else { return }
             self.finalized = true
@@ -229,6 +248,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.totalSegments = self.segmentCount
             self.meta.totalInjections = self.injectionCount
             self.meta.totalRefines = self.refineCount
+            self.meta.keepAliveTicksAtEnd = keepAliveTicks
             self.writeMeta()
             Log.app.info("DebugCapture session: \(self.meta.sessionId, privacy: .public) — \(self.segmentCount, privacy: .public) seg, \(self.injectionCount, privacy: .public) inj, \(self.refineCount, privacy: .public) ref, \(audio.duration, format: .fixed(precision: 1))s audio → \(self.folder.lastPathComponent, privacy: .public)")
         }
@@ -237,7 +257,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// Best-effort cancel. Same semantics as finalize but no audio is written —
     /// the partial session dir is left on disk so the user can inspect it.
     /// Used when stopRecording bails early (e.g. buffer too short).
-    func abort() {
+    func abort(keepAliveTicks: Int? = nil) {
         queue.async {
             guard !self.finalized else { return }
             self.finalized = true
@@ -245,6 +265,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.totalSegments = self.segmentCount
             self.meta.totalInjections = self.injectionCount
             self.meta.totalRefines = self.refineCount
+            self.meta.keepAliveTicksAtEnd = keepAliveTicks
             self.writeMeta()
         }
     }

@@ -115,10 +115,12 @@ final class DebugCaptureWriterTests: XCTestCase {
         let folder = tempRoot.appendingPathComponent("session-bugA", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let meta = DebugCaptureWriter.Meta(
-            sessionId: "bugA0001", appVersion: "test", startedAt: Date(), endedAt: nil,
+            sessionId: "bugA0001", appVersion: "test", gitCommitSHA: nil,
+            startedAt: Date(), endedAt: nil,
             backend: "qwen", language: "zh", liveMode: false, frontmostBundleID: nil,
-            profileSnippet: nil, asrContextChars: 0,
-            totalAudioSec: nil, totalSegments: nil, totalInjections: nil, totalRefines: nil
+            profileSnippet: nil, asrContextChars: 0, keepAliveTicksAtStart: nil,
+            totalAudioSec: nil, totalSegments: nil, totalInjections: nil, totalRefines: nil,
+            keepAliveTicksAtEnd: nil
         )
         let audio = AudioBuffer(samples: [Float](repeating: 0, count: 16_000), sampleRate: 16_000)
 
@@ -257,6 +259,7 @@ final class DebugCaptureWriterTests: XCTestCase {
         let meta = DebugCaptureWriter.Meta(
             sessionId: sessionId,
             appVersion: "test",
+            gitCommitSHA: nil,
             startedAt: Date(),
             endedAt: nil,
             backend: "qwen",
@@ -265,10 +268,12 @@ final class DebugCaptureWriterTests: XCTestCase {
             frontmostBundleID: "com.test.app",
             profileSnippet: nil,
             asrContextChars: 0,
+            keepAliveTicksAtStart: nil,
             totalAudioSec: nil,
             totalSegments: nil,
             totalInjections: nil,
-            totalRefines: nil
+            totalRefines: nil,
+            keepAliveTicksAtEnd: nil
         )
         return DebugCaptureWriter(folder: folder, meta: meta)
     }

@@ -28,7 +28,7 @@ python3 summary.py "$ROOT"
 python3 segment_latency.py "$ROOT"
 ```
 
-## 6 个脚本
+## 7 个脚本
 
 ### `summary.py` — "dogfood pool 够不够"
 
@@ -95,6 +95,20 @@ python3 refine_quality.py "$ROOT" --sample 10 --seed 42
 ```
 
 > **schema 注**：`RefineRecord.rawFirst` 在 v0.7.0 砍掉 raw-first feature 后，新 capture 永远是 `false`；脚本不读这个字段，老 capture 兼容。
+
+### `keep_alive.py` — "v0.6.4 keep-alive 真在跑吗" (v0.7.1+)
+
+读 `Meta.keepAliveTicksAtStart` / `keepAliveTicksAtEnd`（v0.7.1 新增），按 `appVersion[@gitCommitSHA]` 切分。回答 v0.6.4 dogfood 翻车那个问题：**"keep-alive timer 是真的在 fire 还是被 App Nap 节流？"**
+
+健康的 v0.7.1+ build：>0 列应该明显超过 ==0 列（90s 周期 + App Nap 抑制让大部分 session 开始时已经至少 fire 过一次）。如果 ==0 占大头，说明 App Nap 抑制没生效或 timer 别处出错。
+
+```bash
+python3 keep_alive.py "$ROOT"
+# 输出每个 build 的：
+#   sess / instr (有 v0.7.1+ 字段的) / >0 / ==0 / p50 / p95 / >30s sess
+```
+
+> **schema 注**：v0.7.1 起 `Meta` 新增 `gitCommitSHA`（`make build` 时 PlistBuddy 注入 Info.plist `GitCommitSHA`）+ `keepAliveTicksAtStart` + `keepAliveTicksAtEnd` 三个字段。pre-v0.7.1 capture 缺这些字段，脚本兼容。
 
 ## 共享代码：`_common.py`
 

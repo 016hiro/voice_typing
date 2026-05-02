@@ -42,6 +42,13 @@ build: metallib icons
 	mkdir -p $(PAYLOAD)/Contents/MacOS $(PAYLOAD)/Contents/Resources $(PAYLOAD)/Contents/Frameworks
 	cp $(BIN) $(PAYLOAD)/Contents/MacOS/$(APP)
 	cp Resources/Info.plist $(PAYLOAD)/Contents/Info.plist
+	# v0.7.1: stamp the built Info.plist with the git short SHA so dogfood
+	# captures (DebugCaptureWriter.Meta.gitCommitSHA) can slice data by
+	# commit instead of just by version string. Source plist stays untouched.
+	@SHA=$$(git rev-parse --short=12 HEAD 2>/dev/null || echo "unknown"); \
+	  if ! git diff --quiet HEAD 2>/dev/null; then SHA="$$SHA-dirty"; fi; \
+	  /usr/libexec/PlistBuddy -c "Add :GitCommitSHA string $$SHA" $(PAYLOAD)/Contents/Info.plist >/dev/null && \
+	  echo "  embedded GitCommitSHA=$$SHA"
 	cp Resources/AppIcon.icns $(PAYLOAD)/Contents/Resources/AppIcon.icns
 	# v0.6.0: SwiftPM doesn't add @executable_path/../Frameworks to LC_RPATH
 	# for executable targets, so dyld can't find embedded frameworks at launch
