@@ -4,7 +4,14 @@
 
 ## Unreleased
 
-_（下个版本的用户可见变更在此累积）_
+### Changed
+- **Refine prompt 收紧**（Clean Up + Polish 两档）：明示要把 ASR 倾向输出的中文数字（"九十九" / "三点一四" / "二零二四" / "零点一点一"）转回阿拉伯数字（"99" / "3.14" / "2024" / "0.1.1"），但量词搭配（"三个文件" / "一只猫"）保留中文形态；中英混读时不要把英文术语（Python / Kubernetes / API / JSON）翻译成中文；"这个" 加进 filler / 口吃折叠列表。Polish 这档把"口语化→书面化重写"显式提升为差异点（之前藏在第 6 条"smooth phrasing"里，现在是 #5 主任务，配 "然后呢" / "and then like" 这种例子）
+- **Settings 桌面设置面板里的 sheet（Dictionary / Profile 编辑器）现在支持 ⌘V/⌘C/⌘A/⌘X/⌘Z**：之前在 Add Vocabulary / Add Profile 弹窗里只能键入不能粘贴，因为 sheet 子窗口没继承主面板的快捷键转发
+
+### Removed
+- **Refine 档位 "Fix Errors" (conservative) 砍掉**：跟 "Clean Up" 的核心职责重叠（修 ASR 错），保留三档没意义。老用户原 Fix Errors 自动迁到 Clean Up——多一些 filler / 口吃删除，但不会改写措辞或顺序
+
+## v0.7.0 — 2026-05-02
 
 ## v0.7.0 — 2026-05-02
 

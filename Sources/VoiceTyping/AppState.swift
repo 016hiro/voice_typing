@@ -206,13 +206,22 @@ final class AppState: ObservableObject {
         let loadedConfig = LLMConfigStore.load()
         self.llmConfig = loadedConfig
 
-        // Migrate v0.2 → v0.3: if no refineMode key, derive from `LLMConfig.enabled`.
-        // enabled=true → conservative (v0.2 behavior), enabled=false → off.
-        if let modeRaw = ud.string(forKey: "refineMode"),
-           let mode = RefineMode(rawValue: modeRaw) {
-            self.refineMode = mode
+        // Migration policy:
+        // - v0.2 → v0.3: no `refineMode` key → derive from `LLMConfig.enabled`.
+        // - v0.7.1: `conservative` ("Fix Errors") removed; legacy users land
+        //   on `.light` ("Clean Up"). `light` covers conservative's only job
+        //   (fix ASR errors) and adds filler/stutter cleanup — surprise-low.
+        //   Same fallback applied for the v0.2-derived case.
+        if let modeRaw = ud.string(forKey: "refineMode") {
+            if modeRaw == "conservative" {
+                self.refineMode = .light
+            } else if let mode = RefineMode(rawValue: modeRaw) {
+                self.refineMode = mode
+            } else {
+                self.refineMode = .default
+            }
         } else {
-            self.refineMode = loadedConfig.enabled ? .conservative : .off
+            self.refineMode = loadedConfig.enabled ? .light : .off
         }
 
         // v0.7.0 #R7 migration: prefer the new `refineDelivery` key. Pre-

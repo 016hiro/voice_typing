@@ -12,7 +12,7 @@ final class LLMRefiningTests: XCTestCase {
     func testCloud_EmptyInput_ReturnsInputUnchanged() async {
         let refiner = CloudLLMRefiner(config: validConfig)
         let result = await refiner.refine("", language: .en,
-                                          mode: .conservative,
+                                          mode: .light,
                                           glossary: nil,
                                           profileSnippet: nil)
         XCTAssertEqual(result, "")
@@ -22,7 +22,7 @@ final class LLMRefiningTests: XCTestCase {
         let refiner = CloudLLMRefiner(config: validConfig)
         let input = "   \n\t  "
         let result = await refiner.refine(input, language: .en,
-                                          mode: .conservative,
+                                          mode: .light,
                                           glossary: nil,
                                           profileSnippet: nil)
         XCTAssertEqual(result, input)
@@ -42,7 +42,7 @@ final class LLMRefiningTests: XCTestCase {
         let refiner = CloudLLMRefiner(config: emptyConfig)
         let input = "hello world"
         let result = await refiner.refine(input, language: .en,
-                                          mode: .conservative,
+                                          mode: .light,
                                           glossary: nil,
                                           profileSnippet: nil)
         XCTAssertEqual(result, input)
@@ -67,7 +67,7 @@ final class LLMRefiningTests: XCTestCase {
     func testProtocol_FakeImpl_Substitutable() async {
         let fake: any LLMRefining = StubRefiner(constantOutput: "STUB-OUTPUT")
         let result = await fake.refine("anything", language: .en,
-                                       mode: .conservative,
+                                       mode: .light,
                                        glossary: nil,
                                        profileSnippet: nil)
         XCTAssertEqual(result, "STUB-OUTPUT")
@@ -171,7 +171,7 @@ final class LLMRefiningTests: XCTestCase {
                                     isDirectory: true)
         let refiner = LocalMLXRefiner(modelDirectory: dir)
         let result = await refiner.refine("", language: .en,
-                                          mode: .conservative,
+                                          mode: .light,
                                           glossary: nil,
                                           profileSnippet: nil)
         XCTAssertEqual(result, "")
@@ -199,7 +199,7 @@ final class LLMRefiningTests: XCTestCase {
 
         let refiner = LocalMLXRefiner(modelDirectory: dir)
         let result = await refiner.refine("hello", language: .en,
-                                          mode: .conservative,
+                                          mode: .light,
                                           glossary: nil,
                                           profileSnippet: nil)
         XCTAssertEqual(result, "hello")

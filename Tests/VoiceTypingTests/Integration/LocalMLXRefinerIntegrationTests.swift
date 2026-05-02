@@ -109,14 +109,14 @@ final class LocalMLXRefinerIntegrationTests: XCTestCase {
 
         let refiner = LocalMLXRefiner(modelDirectory: modelDirectory)
         // Discard cold-path call. Don't time this one — it includes load.
-        _ = await refiner.refine("warmup", language: .en, mode: .conservative,
+        _ = await refiner.refine("warmup", language: .en, mode: .light,
                                   glossary: nil, profileSnippet: nil)
 
         // Time the warm second call.
         let t0 = Date()
         let output = await refiner.refine(
             "Hello, world.",
-            language: .en, mode: .conservative,
+            language: .en, mode: .light,
             glossary: nil, profileSnippet: nil
         )
         let warmMs = Int(Date().timeIntervalSince(t0) * 1000)
