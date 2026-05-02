@@ -832,7 +832,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     delivery: "live",
                     overrideLlmMs: liveResult.refinedInline ? liveResult.localRefineMs : nil
                 )
-                captureWriter?.finalize(audio: buffer, keepAliveTicks: self.asrKeepAlive.tickCountSnapshot)
+                // v0.7.1 #B6: pump metrics get pulled AFTER the live drain
+                // (`liveIngest?.value`) and `lt.finish()` returned + drained,
+                // so the pump task has fully exited and `pumpMetricsSnapshot`
+                // is consistent. Batch mode below leaves these as nil.
+                let pumpMetrics = liveTranscriber?.pumpMetricsSnapshot
+                captureWriter?.finalize(
+                    audio: buffer,
+                    keepAliveTicks: self.asrKeepAlive.tickCountSnapshot,
+                    chunkLagMaxMs: pumpMetrics?.chunkLagMaxMs,
+                    pumpStallMaxMs: pumpMetrics?.pumpStallMaxMs,
+                    vadProcessSumMs: pumpMetrics?.vadProcessSumMs,
+                    ingestCount: pumpMetrics?.ingestCount
+                )
                 return
             }
 

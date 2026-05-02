@@ -3,9 +3,14 @@ import AppKit
 
 /// Subset of `QwenASRRecognizer` that `ASRKeepAlive` actually needs. Lets unit
 /// tests drive a fake without spinning up MLX shaders + downloads.
+///
+/// v0.7.1 #B6: returns `(text, lockWaitMs)` so live-mode callers can record
+/// `transcribeLock` wait time per segment. Keep-alive itself ignores
+/// `lockWaitMs` (it's not on the user-visible critical path), but the
+/// live pump uses it to fill `SegmentRecord.lockWaitMs`.
 protocol KeepAliveTarget: AnyObject, Sendable {
     var state: RecognizerState { get }
-    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> String
+    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> (text: String, lockWaitMs: Int)
 }
 
 extension QwenASRRecognizer: KeepAliveTarget {}
@@ -165,6 +170,9 @@ final class ASRKeepAlive: @unchecked Sendable {
             language: ASRKeepAlive.dummyLanguage,
             context: nil
         )
+        // v0.7.1 #B6: ignore the returned `.lockWaitMs` here — keep-alive
+        // ticks aren't user-visible, so per-tick lock-wait isn't actionable
+        // even if it'd be elevated under contention with a live transcribe.
         let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
 
         lock.lock()

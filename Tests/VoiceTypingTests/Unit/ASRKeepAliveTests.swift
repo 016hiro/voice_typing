@@ -185,13 +185,13 @@ private final class FakeKeepAliveTarget: KeepAliveTarget, @unchecked Sendable {
         return _lastContext
     }
 
-    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> String {
+    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> (text: String, lockWaitMs: Int) {
         lock.lock()
         _tickCount += 1
         _lastSamples = samples
         _lastLanguage = language
         _lastContext = context
         lock.unlock()
-        return ""
+        return ("", 0)
     }
 }

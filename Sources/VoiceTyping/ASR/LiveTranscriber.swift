@@ -44,14 +44,36 @@ final class LiveTranscriber: @unchecked Sendable {
     /// HallucinationFilter outcome — `kept` distinguishes which path the text
     /// took. The writer uses this to capture the filter ± analysis (#6 in
     /// `todo/v0.5.1.md`).
+    ///
+    /// v0.7.1 #B6: extended with per-segment pump instrumentation so we can
+    /// see WHERE the time went on slow segments. All `…SinceLast` fields are
+    /// reset after each segment; they describe the pump cycle leading up to
+    /// THIS segment's transcribe call. See SKILL/comments in `runPump`.
     struct SegmentEvent: Sendable {
         let rawText: String
         let kept: Bool
         let startSec: Double
         let endSec: Double
         let transcribeMs: Int
+        let lockWaitMs: Int
+        let chunkLagMaxMs: Int
+        let pumpStallMaxMs: Int
+        let vadProcessSumMs: Int
+        let chunksSinceLast: Int
+        let forceSplit: Bool
+        let flushTriggered: Bool
     }
     typealias SegmentObserver = @Sendable (SegmentEvent) -> Void
+
+    /// v0.7.1 #B6: session-level pump health snapshot. Read after the pump
+    /// task finishes (i.e. `lt.finish()` returned and `output` drained), so
+    /// AppDelegate can pass these into `DebugCaptureWriter.finalize`.
+    struct PumpMetrics: Sendable {
+        var chunkLagMaxMs: Int = 0
+        var pumpStallMaxMs: Int = 0
+        var vadProcessSumMs: Int = 0
+        var ingestCount: Int = 0
+    }
 
     /// v0.5.3 hands-free hook. Fires the moment VAD reports a speech-state
     /// transition — *before* the transcribe call. Lets the hands-free state
@@ -74,10 +96,24 @@ final class LiveTranscriber: @unchecked Sendable {
     let output: AsyncThrowingStream<String, Error>
     private let outputContinuation: AsyncThrowingStream<String, Error>.Continuation
 
-    private let sampleStream: AsyncStream<[Float]>
-    private let sampleContinuation: AsyncStream<[Float]>.Continuation
+    /// v0.7.1 #B6: chunks carry their `ingest()` wall-clock so the pump can
+    /// measure AsyncStream queue lag. A `Date()` allocation per chunk at
+    /// 16 kHz / 512-sample frames = ~31 ingests/sec on the audio thread —
+    /// negligible vs the audio copy itself.
+    private let sampleStream: AsyncStream<(ingestedAt: Date, samples: [Float])>
+    private let sampleContinuation: AsyncStream<(ingestedAt: Date, samples: [Float])>.Continuation
 
     private var pumpTask: Task<Void, Never>?
+
+    /// v0.7.1 #B6: session-level metrics published by the pump task.
+    /// `metricsLock` guards every read/write; `pumpMetricsSnapshot` is the
+    /// supported reader. Don't read `_pumpMetrics` directly.
+    private let metricsLock = NSLock()
+    private var _pumpMetrics = PumpMetrics()
+    var pumpMetricsSnapshot: PumpMetrics {
+        metricsLock.lock(); defer { metricsLock.unlock() }
+        return _pumpMetrics
+    }
 
     init(
         recognizer: QwenASRRecognizer,
@@ -102,7 +138,7 @@ final class LiveTranscriber: @unchecked Sendable {
 
         // `.unbounded`: live samples must never be dropped — VAD relies on
         // continuous input to maintain its hidden-state hysteresis.
-        let (samples, samplesCont) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .unbounded)
+        let (samples, samplesCont) = AsyncStream<(ingestedAt: Date, samples: [Float])>.makeStream(bufferingPolicy: .unbounded)
         self.sampleStream = samples
         self.sampleContinuation = samplesCont
     }
@@ -115,9 +151,11 @@ final class LiveTranscriber: @unchecked Sendable {
     }
 
     /// Push a chunk of 16 kHz mono Float32 samples. Safe to call from any thread.
+    /// v0.7.1 #B6: stamps the chunk's ingest time so the pump can measure
+    /// AsyncStream queue lag.
     func ingest(samples: [Float]) {
         guard !samples.isEmpty else { return }
-        sampleContinuation.yield(samples)
+        sampleContinuation.yield((Date(), samples))
     }
 
     /// Signal end-of-input. The pump runs VAD flush + tail transcription, then
@@ -161,20 +199,44 @@ final class LiveTranscriber: @unchecked Sendable {
         var speechStartSample: Int?
         var emittedSegmentCount = 0
 
+        // v0.7.1 #B6 instrumentation. Two layers:
+        //  - per-segment window: reset after each `transcribeSegment` so the
+        //    next segment's record describes only the cycles since the prior.
+        //  - session totals: kept on the lock-guarded `_pumpMetrics` so
+        //    `pumpMetricsSnapshot` reads consistent values after pump finishes.
+        var winChunkLagMaxMs = 0
+        var winPumpStallMaxMs = 0
+        var winVadProcessSumMs = 0
+        var winChunksSinceLast = 0
+        var sessChunkLagMaxMs = 0
+        var sessPumpStallMaxMs = 0
+        var sessVadProcessSumMs = 0
+        var sessIngestCount = 0
+        var lastDrainAt: Date?
+
         // Closure captures `liveBuffer` by reference via inout-style access
         // through the enclosing function scope — Swift handles this correctly
         // for value types in nested funcs.
         let observer = segmentObserver
-        func transcribeSegment(startSample: Int, endSample: Int) {
+        func transcribeSegment(startSample: Int, endSample: Int, forceSplit: Bool, flushTriggered: Bool) {
             let paddedStart = max(0, startSample - padSamples)
             let paddedEnd = min(endSample + padSamples, liveBuffer.count)
             guard paddedStart < paddedEnd else { return }
             let segAudio = Array(liveBuffer[paddedStart..<paddedEnd])
             let segStart = Date()
-            let text = recognizer.transcribeSegmentSync(
+            let (text, lockWaitMs) = recognizer.transcribeSegmentSync(
                 samples: segAudio, language: lang, context: ctx
             )
             let transcribeMs = Int(Date().timeIntervalSince(segStart) * 1000)
+            // Snapshot per-segment window metrics, then reset for the next segment.
+            let evChunkLagMaxMs = winChunkLagMaxMs
+            let evPumpStallMaxMs = winPumpStallMaxMs
+            let evVadProcessSumMs = winVadProcessSumMs
+            let evChunksSinceLast = winChunksSinceLast
+            winChunkLagMaxMs = 0
+            winPumpStallMaxMs = 0
+            winVadProcessSumMs = 0
+            winChunksSinceLast = 0
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
             let startSec = Double(paddedStart) / 16000
@@ -189,7 +251,14 @@ final class LiveTranscriber: @unchecked Sendable {
                 kept: kept,
                 startSec: startSec,
                 endSec: endSec,
-                transcribeMs: transcribeMs
+                transcribeMs: transcribeMs,
+                lockWaitMs: lockWaitMs,
+                chunkLagMaxMs: evChunkLagMaxMs,
+                pumpStallMaxMs: evPumpStallMaxMs,
+                vadProcessSumMs: evVadProcessSumMs,
+                chunksSinceLast: evChunksSinceLast,
+                forceSplit: forceSplit,
+                flushTriggered: flushTriggered
             ))
             guard kept else {
                 Log.dev(Log.asr, "Live hallucination filtered: \(trimmed)")
@@ -200,15 +269,35 @@ final class LiveTranscriber: @unchecked Sendable {
             outputContinuation.yield(trimmed)
         }
 
-        for await chunk in sampleStream {
+        for await (ingestedAt, chunk) in sampleStream {
             if Task.isCancelled { break }
+
+            // ── per-chunk instrumentation ─────────────────────────────────
+            let drainAt = Date()
+            let chunkLagMs = Int(drainAt.timeIntervalSince(ingestedAt) * 1000)
+            if chunkLagMs > winChunkLagMaxMs { winChunkLagMaxMs = chunkLagMs }
+            if chunkLagMs > sessChunkLagMaxMs { sessChunkLagMaxMs = chunkLagMs }
+            if let last = lastDrainAt {
+                let gapMs = Int(drainAt.timeIntervalSince(last) * 1000)
+                if gapMs > winPumpStallMaxMs { winPumpStallMaxMs = gapMs }
+                if gapMs > sessPumpStallMaxMs { sessPumpStallMaxMs = gapMs }
+            }
+            lastDrainAt = drainAt
+            winChunksSinceLast += 1
+            sessIngestCount += 1
+            // ──────────────────────────────────────────────────────────────
 
             liveBuffer.append(contentsOf: chunk)
 
             // StreamingVADProcessor buffers internally — feed chunks of any size.
             // The processor returns 0 or more events triggered by completed
             // 512-sample VAD windows.
+            let vadStart = Date()
             let events = processor.process(samples: chunk)
+            let vadMs = Int(Date().timeIntervalSince(vadStart) * 1000)
+            winVadProcessSumMs += vadMs
+            sessVadProcessSumMs += vadMs
+
             for event in events {
                 switch event {
                 case .speechStarted(let t):
@@ -218,7 +307,8 @@ final class LiveTranscriber: @unchecked Sendable {
                     vadObserver?(.speechEnded)
                     if let start = speechStartSample {
                         let endSample = min(Int(seg.endTime * 16000), liveBuffer.count)
-                        transcribeSegment(startSample: start, endSample: endSample)
+                        transcribeSegment(startSample: start, endSample: endSample,
+                                          forceSplit: false, flushTriggered: false)
                         speechStartSample = nil
                     }
                 }
@@ -232,7 +322,8 @@ final class LiveTranscriber: @unchecked Sendable {
                 let speechStart = Float(start) / 16000
                 if now - speechStart >= maxSegmentDuration {
                     let endSample = min(Int(now * 16000), liveBuffer.count)
-                    transcribeSegment(startSample: start, endSample: endSample)
+                    transcribeSegment(startSample: start, endSample: endSample,
+                                      forceSplit: true, flushTriggered: false)
                     speechStartSample = Int(now * 16000)
                 }
             }
@@ -246,7 +337,8 @@ final class LiveTranscriber: @unchecked Sendable {
             if case .speechEnded(let seg) = event, let start = speechStartSample {
                 vadObserver?(.speechEnded)
                 let endSample = min(Int(seg.endTime * 16000), liveBuffer.count)
-                transcribeSegment(startSample: start, endSample: endSample)
+                transcribeSegment(startSample: start, endSample: endSample,
+                                  forceSplit: false, flushTriggered: true)
                 speechStartSample = nil
             }
         }
@@ -254,9 +346,22 @@ final class LiveTranscriber: @unchecked Sendable {
         // Edge case: VAD never confirmed any speech (very short / soft / noisy).
         // Mirror the batch path's fallback so the user still gets some output.
         if emittedSegmentCount == 0 && liveBuffer.count >= 400 {
-            transcribeSegment(startSample: 0, endSample: liveBuffer.count)
+            transcribeSegment(startSample: 0, endSample: liveBuffer.count,
+                              forceSplit: false, flushTriggered: true)
         }
 
-        Log.asr.info("LiveTranscriber finished: \(liveBuffer.count) samples / \(emittedSegmentCount) segments emitted")
+        // Publish session totals for `pumpMetricsSnapshot`. Swift 6 forbids
+        // raw NSLock.lock()/unlock() across awaits; `withLock` is the
+        // async-safe equivalent (no awaits inside, so trivially scoped).
+        metricsLock.withLock {
+            _pumpMetrics = PumpMetrics(
+                chunkLagMaxMs: sessChunkLagMaxMs,
+                pumpStallMaxMs: sessPumpStallMaxMs,
+                vadProcessSumMs: sessVadProcessSumMs,
+                ingestCount: sessIngestCount
+            )
+        }
+
+        Log.asr.info("LiveTranscriber finished: \(liveBuffer.count) samples / \(emittedSegmentCount) segments emitted / chunkLagMax=\(sessChunkLagMaxMs)ms pumpStallMax=\(sessPumpStallMaxMs)ms vadSum=\(sessVadProcessSumMs)ms")
     }
 }

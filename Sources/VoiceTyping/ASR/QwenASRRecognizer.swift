@@ -214,11 +214,17 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
     /// one FFT window (400 samples); both conditions are silently dropped
     /// rather than throwing because mid-stream errors would tear down the
     /// live session for what's typically a transient or trivial cause.
-    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> String {
-        guard samples.count >= 400 else { return "" }
-        return transcribeLock.withLock { () -> String in
-            guard let model = self.model else { return "" }
-            return TranscribeWatchdog.run(
+    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> (text: String, lockWaitMs: Int) {
+        // v0.7.1 #B6: track wait-for-lock so the live pump can record contention
+        // separately from transcribe time. Lock acquired BEFORE the early-return
+        // branch is also recorded so an empty buffer at the back of a long lock
+        // queue still surfaces as elevated `lockWaitMs`.
+        let waitStart = Date()
+        guard samples.count >= 400 else { return ("", 0) }
+        return transcribeLock.withLock { () -> (String, Int) in
+            let lockWaitMs = Int(Date().timeIntervalSince(waitStart) * 1000)
+            guard let model = self.model else { return ("", lockWaitMs) }
+            let text = TranscribeWatchdog.run(
                 callsite: "segment-sync",
                 samples: samples.count,
                 language: language,
@@ -229,6 +235,7 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
                     language: language, maxTokens: 448, context: context
                 )
             }
+            return (text, lockWaitMs)
         }
     }
 

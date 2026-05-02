@@ -125,7 +125,14 @@ extension AppDelegate {
                     endSec: event.endSec,
                     rawText: event.rawText,
                     filter: event.kept ? .kept : .hallucinationFiltered,
-                    transcribeMs: event.transcribeMs
+                    transcribeMs: event.transcribeMs,
+                    lockWaitMs: event.lockWaitMs,
+                    chunkLagMaxMs: event.chunkLagMaxMs,
+                    pumpStallMaxMs: event.pumpStallMaxMs,
+                    vadProcessSumMs: event.vadProcessSumMs,
+                    chunksSinceLast: event.chunksSinceLast,
+                    forceSplit: event.forceSplit,
+                    flushTriggered: event.flushTriggered
                 ))
             }
         }

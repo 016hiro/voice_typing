@@ -63,6 +63,18 @@ final class DebugCaptureWriter: @unchecked Sendable {
         var totalInjections: Int?
         var totalRefines: Int?       // v0.6.3 #R8 — populated by finalize/abort
         var keepAliveTicksAtEnd: Int?  // v0.7.1: snapshot at session end
+
+        /// v0.7.1 #B6 dogfood follow-up: live-mode pump health metrics, set
+        /// by `LiveTranscriber.pumpMetricsSnapshot` at finalize/abort time.
+        /// All `nil` for batch-mode sessions (no pump). Designed to answer:
+        /// "did chunks back up in the AsyncStream / did the pump task stall?"
+        /// — the orphan-tail pattern (be8ac70b / cd17f150 / cb42cdda) showed
+        /// segments writing 30 s after audio end while individual transcribe
+        /// calls stayed under 1 s, so the wait is upstream of `model.transcribe`.
+        var chunkLagMaxMs: Int? = nil      // worst single chunk ingest→drain lag
+        var pumpStallMaxMs: Int? = nil     // longest gap between two consecutive drains
+        var vadProcessSumMs: Int? = nil    // sum of per-chunk VAD .process() time
+        var ingestCount: Int? = nil        // total chunks ingested
     }
 
     struct SegmentRecord: Codable {
@@ -72,6 +84,28 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let rawText: String           // before HallucinationFilter
         let filter: FilterDecision
         let transcribeMs: Int
+
+        /// v0.7.1 #B6 dogfood follow-up: per-segment pump-health snapshot.
+        /// All fields are accumulated *since the previous segment was emitted*
+        /// (or session start for the first segment), then reset. Lets us see
+        /// not just THAT a session was slow but WHERE the time was spent.
+        ///
+        /// All nil on batch-mode segments (no live pump). On live-mode segments
+        /// they're populated by `LiveTranscriber.SegmentEvent`.
+        var lockWaitMs: Int? = nil      // wait for `transcribeLock` before MLX call
+        var chunkLagMaxMs: Int? = nil   // worst chunk ingest→drain lag in this window
+        var pumpStallMaxMs: Int? = nil  // longest gap between drains in this window
+        var vadProcessSumMs: Int? = nil // VAD .process() sum across this window
+        var chunksSinceLast: Int? = nil // chunks pumped through this window
+        /// True iff this segment was emitted because the speech span exceeded
+        /// `maxSegmentDuration` (force-split path), not a natural VAD speechEnded.
+        var forceSplit: Bool? = nil
+        /// True iff this segment was emitted from the EOF flush path
+        /// (`processor.flush()` or the "VAD never fired" fallback) — i.e.
+        /// AFTER `sampleStream.finish()` was called. The orphan-tail pattern
+        /// shows up as a session where every segment has `flushTriggered=true`,
+        /// meaning live streaming wasn't actually streaming.
+        var flushTriggered: Bool? = nil
     }
 
     enum InjectStatus: String, Codable, Sendable {
@@ -164,7 +198,11 @@ final class DebugCaptureWriter: @unchecked Sendable {
             totalSegments: nil,
             totalInjections: nil,
             totalRefines: nil,
-            keepAliveTicksAtEnd: nil
+            keepAliveTicksAtEnd: nil,
+            chunkLagMaxMs: nil,
+            pumpStallMaxMs: nil,
+            vadProcessSumMs: nil,
+            ingestCount: nil
         )
         return DebugCaptureWriter(folder: folder, meta: meta)
     }
@@ -231,7 +269,14 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// Write audio.wav + meta.json. Subsequent appends are no-ops. Synchronous
     /// from the queue's perspective (other appends already enqueued before
     /// `finalize` will land first; appends enqueued after will be dropped).
-    func finalize(audio: AudioBuffer, keepAliveTicks: Int? = nil) {
+    func finalize(
+        audio: AudioBuffer,
+        keepAliveTicks: Int? = nil,
+        chunkLagMaxMs: Int? = nil,
+        pumpStallMaxMs: Int? = nil,
+        vadProcessSumMs: Int? = nil,
+        ingestCount: Int? = nil
+    ) {
         queue.async {
             guard !self.finalized else { return }
             self.finalized = true
@@ -249,6 +294,10 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.totalInjections = self.injectionCount
             self.meta.totalRefines = self.refineCount
             self.meta.keepAliveTicksAtEnd = keepAliveTicks
+            self.meta.chunkLagMaxMs = chunkLagMaxMs
+            self.meta.pumpStallMaxMs = pumpStallMaxMs
+            self.meta.vadProcessSumMs = vadProcessSumMs
+            self.meta.ingestCount = ingestCount
             self.writeMeta()
             Log.app.info("DebugCapture session: \(self.meta.sessionId, privacy: .public) — \(self.segmentCount, privacy: .public) seg, \(self.injectionCount, privacy: .public) inj, \(self.refineCount, privacy: .public) ref, \(audio.duration, format: .fixed(precision: 1))s audio → \(self.folder.lastPathComponent, privacy: .public)")
         }
@@ -257,7 +306,13 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// Best-effort cancel. Same semantics as finalize but no audio is written —
     /// the partial session dir is left on disk so the user can inspect it.
     /// Used when stopRecording bails early (e.g. buffer too short).
-    func abort(keepAliveTicks: Int? = nil) {
+    func abort(
+        keepAliveTicks: Int? = nil,
+        chunkLagMaxMs: Int? = nil,
+        pumpStallMaxMs: Int? = nil,
+        vadProcessSumMs: Int? = nil,
+        ingestCount: Int? = nil
+    ) {
         queue.async {
             guard !self.finalized else { return }
             self.finalized = true
@@ -266,6 +321,10 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.totalInjections = self.injectionCount
             self.meta.totalRefines = self.refineCount
             self.meta.keepAliveTicksAtEnd = keepAliveTicks
+            self.meta.chunkLagMaxMs = chunkLagMaxMs
+            self.meta.pumpStallMaxMs = pumpStallMaxMs
+            self.meta.vadProcessSumMs = vadProcessSumMs
+            self.meta.ingestCount = ingestCount
             self.writeMeta()
         }
     }
