@@ -6,11 +6,12 @@
 
 _（下个版本的用户可见变更在此累积）_
 
-## v0.7.1 — 2026-05-02
+## v0.7.1 — 2026-05-07
 
 ### Fixed
-- **闲置后首次 ASR 卡顿**（v0.6.4 修的同一个 bug，v0.6.4 实际没修干净）：v0.6.4 ship 后 dogfood 数据显示 ≥5 s outlier 反而从 2.2% 升到 5.3%，根因是当时的 keep-alive timer 在 release 里被 macOS App Nap 节流，且没人能观测到（log 默认 off）。v0.7.1 加 `ProcessInfo.beginActivity(.userInitiated)` 抑制 App Nap、`NSWorkspace.didWakeNotification` 监听 wake-from-sleep 立即补 tick、timer callback 的 QoS 从 `.background`（最低，可被任意 defer）升到 `.utility`、所有 keep-alive 日志从 `.dev` 升 `.notice`（release 默认可见）
-- **Settings 设置面板里的 sheet（Dictionary / Profile 编辑器）现在支持 ⌘V/⌘C/⌘A/⌘X/⌘Z**：之前在 Add Vocabulary / Add Profile 弹窗里只能键入不能粘贴，因为 sheet 子窗口没继承主面板的快捷键转发
+- **闲置后首次 ASR 卡顿**（v0.6.0 起的存量 bug，v0.6.4 那次没修干净）：闲置 1-2h 后 macOS 把 MLX 权重压成冷页，下次按 Fn 要等 9-30s 解压；overnight 11h 后甚至 37-51s。v0.7.1 用 mlx-swift 提供的 `WiredMemoryTicket` 把权重页钉死在 GPU residency 集合里，compressor 看到就跳过。Dogfood 验证：≥5s 慢段比例 5.3% → **0%**，最差段从 30-51s → **3.56s**，11.5 小时通宵 idle 后第一段 1.08s
+- **Live 模式偶发"录音转字 30+ 秒不出"**：dogfood 抓到一例首段 145ms 转完后第二段无声卡死的捕获。根因是 Silero VAD 和 Qwen ASR 在 MLX 内部共享同一把 lock，VAD 冷路径占住时整个推理链全等。修法：live 模式 VAD 切换到 CoreML 路径走 ANE+CPU，跟 MLX 完全分开；同时加被动 watchdog（疑似挂起 5s 后自动抓线程栈到 `~/Library/Application Support/VoiceTyping/hang-stacks/` 方便后续诊断）
+- **Settings 设置面板里的 sheet（Dictionary / Profile 编辑器）现在支持 ⌘V/⌘C/⌘A/⌘X/⌘Z**：之前在 Add Vocabulary / Add Profile 弹窗里只能键入不能粘贴
 
 ### Changed
 - **Refine prompt 收紧**（Clean Up + Polish 两档）：明示要把 ASR 倾向输出的中文数字（"九十九" / "三点一四" / "二零二四" / "零点一点一"）转回阿拉伯数字（"99" / "3.14" / "2024" / "0.1.1"），但量词搭配（"三个文件" / "一只猫"）保留中文形态；中英混读时不要把英文术语（Python / Kubernetes / API / JSON）翻译成中文；"这个" 加进 filler / 口吃折叠列表。Polish 这档把"口语化→书面化重写"显式提升为差异点（之前藏在第 6 条"smooth phrasing"里，现在是 #5 主任务，配 "然后呢" / "and then like" 这种例子）
@@ -20,6 +21,7 @@ _（下个版本的用户可见变更在此累积）_
 - **Refine 档位 "Fix Errors" (conservative) 砍掉**：跟 "Clean Up" 的核心职责重叠（修 ASR 错），保留三档没意义。老用户原 Fix Errors 自动迁到 Clean Up——多一些 filler / 口吃删除，但不会改写措辞或顺序
 
 ### Notes
+- 内存占用：Qwen ASR 后端（默认）会在加载后保留 ~1.5 GB unified memory 不被压缩，直到切换到 Whisper 后端或退出 app。这是为换冷启动延迟做的取舍，参见 [`docs/decisions/0002-pin-mlx-weights-not-keep-alive.md`](docs/decisions/0002-pin-mlx-weights-not-keep-alive.md)
 - 完整开发记录：[`docs/devlog/v0.7.1.md`](docs/devlog/v0.7.1.md)
 
 ## v0.7.0 — 2026-05-02
