@@ -224,14 +224,9 @@ final class LiveTranscriber: @unchecked Sendable {
             guard paddedStart < paddedEnd else { return }
             let segAudio = Array(liveBuffer[paddedStart..<paddedEnd])
             let segStart = Date()
-            // v0.7.1 #B6: gate the user-visible MLX call so any in-flight
-            // ASR keep-alive tick that fires concurrently is denied. See
-            // `MLXWorkGate` header comment for the relu-lock root cause.
-            let (text, lockWaitMs) = MLXWorkGate.shared.runUser(callsite: "live-segment") {
-                recognizer.transcribeSegmentSync(
-                    samples: segAudio, language: lang, context: ctx
-                )
-            }
+            let (text, lockWaitMs) = recognizer.transcribeSegmentSync(
+                samples: segAudio, language: lang, context: ctx
+            )
             let transcribeMs = Int(Date().timeIntervalSince(segStart) * 1000)
             // Snapshot per-segment window metrics, then reset for the next segment.
             let evChunkLagMaxMs = winChunkLagMaxMs

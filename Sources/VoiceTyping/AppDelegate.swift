@@ -9,12 +9,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let audio = AudioCapture()
     let injector = TextInjector()
     let fnMonitor = FnHotkeyMonitor()
-    /// v0.6.4: anti-compressor keep-alive for Qwen MLX weights. Started when
-    /// the recognizer reaches `.ready`, stopped on swap / non-ready / quit.
-    /// v0.7.1 #B6 follow-up: now gated through `MLXWorkGate.shared` so a tick
-    /// that is queued while the user is mid-transcribe gets denied instead of
-    /// piling onto MLX's per-CompiledFunction lock.
-    let asrKeepAlive = ASRKeepAlive()
 
     /// On-device MLX refiner — held as a singleton so the actor's lazy load +
     /// loaded weights survive across refine calls. Created lazily so users who
@@ -312,7 +306,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backendSwapTask?.cancel()
         recordingDurationTask?.cancel()
         permissionTimer?.invalidate()
-        asrKeepAlive.stop()
         if let obs = appActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(obs)
         }
@@ -364,10 +357,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backendSwapTask?.cancel()
         recognizerStateTask?.cancel()
         pipelineTask?.cancel()
-        // v0.6.4: stop keep-alive before tearing down the old recognizer so
-        // an in-flight tick can't dispatch against a model we're about to
-        // unload. New recognizer's state observer re-starts it on `.ready`.
-        asrKeepAlive.stop()
         cachedVADBox = nil
 
         // Unload old Qwen to free weights (WhisperKit doesn't expose unload).
@@ -402,16 +391,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Refresh model inventory when download completes
                     if case .ready = s {
                         self.state.modelInventoryTick &+= 1
-                    }
-                    // v0.6.4: gate keep-alive on `.ready`. Whisper backend
-                    // doesn't conform to KeepAliveTarget — the `as?` skips it.
-                    // Any non-ready state stops the timer so we don't dispatch
-                    // dummy transcribes during loading / failure.
-                    if case .ready = s,
-                       let qwen = newRecognizer as? QwenASRRecognizer {
-                        self.asrKeepAlive.start(target: qwen)
-                    } else {
-                        self.asrKeepAlive.stop()
                     }
                 }
             }
@@ -576,8 +555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 liveMode: useLive,
                 frontmostBundleID: bid,
                 profileSnippet: snippet,
-                asrContext: asrCtx,
-                keepAliveTicks: asrKeepAlive.tickCountSnapshot
+                asrContext: asrCtx
             )
 
             // v0.5.3: if hands-free conditions might fire on Fn↑, wire a VAD
@@ -686,7 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if buffer.samples.count < 400 {
             Log.app.info("stopRecording: buffer too short (\(buffer.samples.count, privacy: .public) samples), skipping ASR")
             cleanUpLiveState()
-            captureWriter?.abort(keepAliveTicks: asrKeepAlive.tickCountSnapshot)
+            captureWriter?.abort()
             flashInfo(message(for: .noSpeech), autoHide: true)
             return
         }
@@ -844,7 +822,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let pumpMetrics = liveTranscriber?.pumpMetricsSnapshot
                 captureWriter?.finalize(
                     audio: buffer,
-                    keepAliveTicks: self.asrKeepAlive.tickCountSnapshot,
                     chunkLagMaxMs: pumpMetrics?.chunkLagMaxMs,
                     pumpStallMaxMs: pumpMetrics?.pumpStallMaxMs,
                     vadProcessSumMs: pumpMetrics?.vadProcessSumMs,
@@ -872,7 +849,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
-                captureWriter?.abort(keepAliveTicks: self.asrKeepAlive.tickCountSnapshot)
+                captureWriter?.abort()
                 await MainActor.run {
                     self.flashInfo(self.message(for: .noSpeech), autoHide: true)
                 }
@@ -959,7 +936,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 status: .ok,
                 elapsedMs: injMs
             ))
-            captureWriter?.finalize(audio: buffer, keepAliveTicks: self.asrKeepAlive.tickCountSnapshot)
+            captureWriter?.finalize(audio: buffer)
         }
     }
 

@@ -118,9 +118,8 @@ final class DebugCaptureWriterTests: XCTestCase {
             sessionId: "bugA0001", appVersion: "test", gitCommitSHA: nil,
             startedAt: Date(), endedAt: nil,
             backend: "qwen", language: "zh", liveMode: false, frontmostBundleID: nil,
-            profileSnippet: nil, asrContextChars: 0, keepAliveTicksAtStart: nil,
-            totalAudioSec: nil, totalSegments: nil, totalInjections: nil, totalRefines: nil,
-            keepAliveTicksAtEnd: nil
+            profileSnippet: nil, asrContextChars: 0,
+            totalAudioSec: nil, totalSegments: nil, totalInjections: nil, totalRefines: nil
         )
         let audio = AudioBuffer(samples: [Float](repeating: 0, count: 16_000), sampleRate: 16_000)
 
@@ -268,12 +267,10 @@ final class DebugCaptureWriterTests: XCTestCase {
             frontmostBundleID: "com.test.app",
             profileSnippet: nil,
             asrContextChars: 0,
-            keepAliveTicksAtStart: nil,
             totalAudioSec: nil,
             totalSegments: nil,
             totalInjections: nil,
-            totalRefines: nil,
-            keepAliveTicksAtEnd: nil
+            totalRefines: nil
         )
         return DebugCaptureWriter(folder: folder, meta: meta)
     }

@@ -210,21 +210,19 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
                     throw NSError(domain: "VoiceTyping.ASR", code: 1,
                                   userInfo: [NSLocalizedDescriptionKey: "Recognizer not prepared"])
                 }
-                return MLXWorkGate.shared.runUser(callsite: "qwen-batch") {
-                    TranscribeWatchdog.run(
-                        callsite: "batch",
-                        samples: samples.count,
+                return TranscribeWatchdog.run(
+                    callsite: "batch",
+                    samples: samples.count,
+                    language: lang,
+                    contextChars: ctx?.count ?? 0
+                ) {
+                    model.transcribe(
+                        audio: samples,
+                        sampleRate: sr,
                         language: lang,
-                        contextChars: ctx?.count ?? 0
-                    ) {
-                        model.transcribe(
-                            audio: samples,
-                            sampleRate: sr,
-                            language: lang,
-                            maxTokens: 448,
-                            context: ctx
-                        )
-                    }
+                        maxTokens: 448,
+                        context: ctx
+                    )
                 }
             }
         }.value
@@ -248,14 +246,7 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
     /// one FFT window (400 samples); both conditions are silently dropped
     /// rather than throwing because mid-stream errors would tear down the
     /// live session for what's typically a transient or trivial cause.
-    ///
-    /// `maxTokens` defaults to 448 — the standard cap for live/batch user
-    /// speech. `ASRKeepAlive` overrides to a tiny value (~4) because its
-    /// silent-buffer dummy transcribe can run the full 448-token budget on
-    /// cold MLX, taking 30-45 s per tick; truncating decode after a handful
-    /// of tokens still warms the encoder + first decoder pass which is what
-    /// the keep-alive cares about.
-    func transcribeSegmentSync(samples: [Float], language: String, context: String?, maxTokens: Int = 448) -> (text: String, lockWaitMs: Int) {
+    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> (text: String, lockWaitMs: Int) {
         // v0.7.1 #B6: track wait-for-lock so the live pump can record contention
         // separately from transcribe time. Lock acquired BEFORE the early-return
         // branch is also recorded so an empty buffer at the back of a long lock
@@ -273,7 +264,7 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
             ) {
                 model.transcribe(
                     audio: samples, sampleRate: 16000,
-                    language: language, maxTokens: maxTokens, context: context
+                    language: language, maxTokens: 448, context: context
                 )
             }
             return (text, lockWaitMs)
@@ -523,18 +514,16 @@ public extension QwenASRRecognizer {
                 // Same minimum-FFT-window guard as the batch path: <400 samples
                 // crashes WhisperFeatureExtractor's reflect padding.
                 guard segAudio.count >= 400 else { return }
-                let text = MLXWorkGate.shared.runUser(callsite: "qwen-stream-segment") {
-                    TranscribeWatchdog.run(
-                        callsite: "stream-segment",
-                        samples: segAudio.count,
-                        language: lang,
-                        contextChars: ctx?.count ?? 0
-                    ) {
-                        asr.transcribe(
-                            audio: segAudio, sampleRate: 16000,
-                            language: lang, maxTokens: 448, context: ctx
-                        )
-                    }
+                let text = TranscribeWatchdog.run(
+                    callsite: "stream-segment",
+                    samples: segAudio.count,
+                    language: lang,
+                    contextChars: ctx?.count ?? 0
+                ) {
+                    asr.transcribe(
+                        audio: segAudio, sampleRate: 16000,
+                        language: lang, maxTokens: 448, context: ctx
+                    )
                 }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }

@@ -51,18 +51,10 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let frontmostBundleID: String?
         let profileSnippet: String?
         let asrContextChars: Int
-        /// v0.7.1: keep-alive timer's tick counter snapshot at session begin.
-        /// Combined with process uptime (= `startedAt - launchedAt` ≈ this
-        /// session's `startedAt` minus app launch) tells us "should there
-        /// have been ticks by now, and were there?" — answers the v0.6.4
-        /// dogfood question "is keep-alive firing at all?" without requiring
-        /// Developer logging to be on.
-        let keepAliveTicksAtStart: Int?
         var totalAudioSec: Double?
         var totalSegments: Int?
         var totalInjections: Int?
         var totalRefines: Int?       // v0.6.3 #R8 — populated by finalize/abort
-        var keepAliveTicksAtEnd: Int?  // v0.7.1: snapshot at session end
 
         /// v0.7.1 #B6 dogfood follow-up: live-mode pump health metrics, set
         /// by `LiveTranscriber.pumpMetricsSnapshot` at finalize/abort time.
@@ -164,8 +156,7 @@ final class DebugCaptureWriter: @unchecked Sendable {
         liveMode: Bool,
         frontmostBundleID: String?,
         profileSnippet: String?,
-        asrContext: String?,
-        keepAliveTicks: Int? = nil
+        asrContext: String?
     ) -> DebugCaptureWriter? {
         guard state.debugCaptureEnabled else { return nil }
         let started = Date()
@@ -193,12 +184,10 @@ final class DebugCaptureWriter: @unchecked Sendable {
             frontmostBundleID: frontmostBundleID,
             profileSnippet: profileSnippet,
             asrContextChars: asrContext?.count ?? 0,
-            keepAliveTicksAtStart: keepAliveTicks,
             totalAudioSec: nil,
             totalSegments: nil,
             totalInjections: nil,
             totalRefines: nil,
-            keepAliveTicksAtEnd: nil,
             chunkLagMaxMs: nil,
             pumpStallMaxMs: nil,
             vadProcessSumMs: nil,
@@ -271,7 +260,6 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// `finalize` will land first; appends enqueued after will be dropped).
     func finalize(
         audio: AudioBuffer,
-        keepAliveTicks: Int? = nil,
         chunkLagMaxMs: Int? = nil,
         pumpStallMaxMs: Int? = nil,
         vadProcessSumMs: Int? = nil,
@@ -293,7 +281,6 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.totalSegments = self.segmentCount
             self.meta.totalInjections = self.injectionCount
             self.meta.totalRefines = self.refineCount
-            self.meta.keepAliveTicksAtEnd = keepAliveTicks
             self.meta.chunkLagMaxMs = chunkLagMaxMs
             self.meta.pumpStallMaxMs = pumpStallMaxMs
             self.meta.vadProcessSumMs = vadProcessSumMs
@@ -307,7 +294,6 @@ final class DebugCaptureWriter: @unchecked Sendable {
     /// the partial session dir is left on disk so the user can inspect it.
     /// Used when stopRecording bails early (e.g. buffer too short).
     func abort(
-        keepAliveTicks: Int? = nil,
         chunkLagMaxMs: Int? = nil,
         pumpStallMaxMs: Int? = nil,
         vadProcessSumMs: Int? = nil,
@@ -320,7 +306,6 @@ final class DebugCaptureWriter: @unchecked Sendable {
             self.meta.totalSegments = self.segmentCount
             self.meta.totalInjections = self.injectionCount
             self.meta.totalRefines = self.refineCount
-            self.meta.keepAliveTicksAtEnd = keepAliveTicks
             self.meta.chunkLagMaxMs = chunkLagMaxMs
             self.meta.pumpStallMaxMs = pumpStallMaxMs
             self.meta.vadProcessSumMs = vadProcessSumMs

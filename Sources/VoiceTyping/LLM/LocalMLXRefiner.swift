@@ -122,13 +122,6 @@ actor LocalMLXRefiner: LLMRefining {
                 ),
                 additionalContext: ["enable_thinking": false]
             )
-            // v0.7.1 #B6: hold MLXWorkGate for the duration of MLX inference
-            // so a 90 s ASR keep-alive timer can't fire mid-refine and pile a
-            // dummy transcribe onto MLX's CompiledFunction lock. The refiner's
-            // generate loop CAN run for 5-15 s on long inputs.
-            MLXWorkGate.shared.beginUser(callsite: "refiner")
-            defer { MLXWorkGate.shared.endUser(callsite: "refiner") }
-
             let inferStart = Date()
 
             var head = ""
@@ -325,12 +318,6 @@ actor LocalLiveSegmentSession {
                 )
             }
             guard let session = chatSession else { continuation.finish(); return }
-
-            // v0.7.1 #B6: hold MLXWorkGate for the duration of segment
-            // generation so an ASR keep-alive tick can't fire mid-decode.
-            // Same rationale as the one-shot path in `refineStreamImpl`.
-            MLXWorkGate.shared.beginUser(callsite: "refiner-live-segment")
-            defer { MLXWorkGate.shared.endUser(callsite: "refiner-live-segment") }
 
             let inferStart = Date()
             // Same head-buffer pattern as one-shot streaming refine — strips
