@@ -8,9 +8,15 @@ import AppKit
 /// `transcribeLock` wait time per segment. Keep-alive itself ignores
 /// `lockWaitMs` (it's not on the user-visible critical path), but the
 /// live pump uses it to fill `SegmentRecord.lockWaitMs`.
+///
+/// v0.7.1 #B6 follow-up: `maxTokens` is now explicit at the protocol level so
+/// the keep-alive can pass a much smaller cap (silent input has no real EOS
+/// signal; the decoder otherwise runs the full 448-token budget on a cold
+/// MLX path → 30-45 s tick). Live/batch callers keep the 448 default via
+/// `QwenASRRecognizer`'s concrete implementation.
 protocol KeepAliveTarget: AnyObject, Sendable {
     var state: RecognizerState { get }
-    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> (text: String, lockWaitMs: Int)
+    func transcribeSegmentSync(samples: [Float], language: String, context: String?, maxTokens: Int) -> (text: String, lockWaitMs: Int)
 }
 
 extension QwenASRRecognizer: KeepAliveTarget {}
@@ -56,6 +62,15 @@ final class ASRKeepAlive: @unchecked Sendable {
     /// preprocessing inside Qwen will yield empty token output regardless.
     /// Pinned to a constant to avoid a needless dependency on `AppState`.
     static let dummyLanguage: String = "en"
+
+    /// v0.7.1 #B6: silent input has no real EOS signal — the decoder can
+    /// happily run the full 448-token budget on a cold MLX path, taking
+    /// 30-45 s per tick (observed in dogfood `2026-05-04_15-24-38` where a
+    /// concurrent live press waited 42.5 s on `transcribeLock`). 4 tokens
+    /// is enough to exercise audio encoder + first decoder pass + a couple
+    /// follow-ups so MLX weights / Metal queue stay warm; bounds the worst-
+    /// case cold-tick at `4 × per_token` (a few seconds at most).
+    static let dummyMaxTokens: Int = 4
 
     private let interval: TimeInterval
     private let lock = NSLock()
@@ -154,6 +169,13 @@ final class ASRKeepAlive: @unchecked Sendable {
     /// Internal so unit tests can drive a tick deterministically. Skips when
     /// the recognizer isn't `.ready` so we don't start dispatching dummy
     /// transcribes against a half-loaded model.
+    ///
+    /// v0.7.1 #B6: gated through `MLXWorkGate.shared.tryRunKeepAlive`. If
+    /// any user-visible MLX call is in flight (live transcribe / batch /
+    /// refiner), the tick is denied and the dummy transcribe never runs.
+    /// This stops the original hang signature where a 30s cold-path tick
+    /// held MLX's per-CompiledFunction lock and blocked the user's
+    /// next Fn↓ for the same 30s.
     func tick() {
         let snapshot: KeepAliveTarget? = {
             lock.lock(); defer { lock.unlock() }
@@ -165,14 +187,17 @@ final class ASRKeepAlive: @unchecked Sendable {
             return
         }
         let started = Date()
-        _ = t.transcribeSegmentSync(
-            samples: ASRKeepAlive.dummySamples,
-            language: ASRKeepAlive.dummyLanguage,
-            context: nil
-        )
-        // v0.7.1 #B6: ignore the returned `.lockWaitMs` here — keep-alive
-        // ticks aren't user-visible, so per-tick lock-wait isn't actionable
-        // even if it'd be elevated under contention with a live transcribe.
+        let ran: Bool = MLXWorkGate.shared.tryRunKeepAlive(callsite: "asrKeepAlive") {
+            _ = t.transcribeSegmentSync(
+                samples: ASRKeepAlive.dummySamples,
+                language: ASRKeepAlive.dummyLanguage,
+                context: nil,
+                maxTokens: ASRKeepAlive.dummyMaxTokens
+            )
+            return true
+        } ?? false
+
+        guard ran else { return }   // gate denied — don't bump tickCount
         let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
 
         lock.lock()

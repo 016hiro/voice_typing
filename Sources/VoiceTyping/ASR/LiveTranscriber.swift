@@ -224,9 +224,14 @@ final class LiveTranscriber: @unchecked Sendable {
             guard paddedStart < paddedEnd else { return }
             let segAudio = Array(liveBuffer[paddedStart..<paddedEnd])
             let segStart = Date()
-            let (text, lockWaitMs) = recognizer.transcribeSegmentSync(
-                samples: segAudio, language: lang, context: ctx
-            )
+            // v0.7.1 #B6: gate the user-visible MLX call so any in-flight
+            // ASR keep-alive tick that fires concurrently is denied. See
+            // `MLXWorkGate` header comment for the relu-lock root cause.
+            let (text, lockWaitMs) = MLXWorkGate.shared.runUser(callsite: "live-segment") {
+                recognizer.transcribeSegmentSync(
+                    samples: segAudio, language: lang, context: ctx
+                )
+            }
             let transcribeMs = Int(Date().timeIntervalSince(segStart) * 1000)
             // Snapshot per-segment window metrics, then reset for the next segment.
             let evChunkLagMaxMs = winChunkLagMaxMs
@@ -292,8 +297,23 @@ final class LiveTranscriber: @unchecked Sendable {
             // StreamingVADProcessor buffers internally — feed chunks of any size.
             // The processor returns 0 or more events triggered by completed
             // 512-sample VAD windows.
+            //
+            // Wrapped with `TranscribeWatchdog` so a hung `model.processChunk`
+            // (the v0.7.1 dogfood failure mode — Silero MLX call sometimes
+            // sits 30+ s after long idle) auto-captures a `sample(1)` stack of
+            // every thread mid-hang. The watchdog timer fires from a utility
+            // queue; it cannot interrupt this thread but it can spawn an
+            // observer that snapshots us. Threshold 5 s is well above warm
+            // p99 (~50 ms) so healthy paths never trigger.
             let vadStart = Date()
-            let events = processor.process(samples: chunk)
+            let events = TranscribeWatchdog.run(
+                callsite: "live-vad-process",
+                samples: chunk.count,
+                language: lang,
+                contextChars: ctx?.count ?? 0
+            ) {
+                processor.process(samples: chunk)
+            }
             let vadMs = Int(Date().timeIntervalSince(vadStart) * 1000)
             winVadProcessSumMs += vadMs
             sessVadProcessSumMs += vadMs

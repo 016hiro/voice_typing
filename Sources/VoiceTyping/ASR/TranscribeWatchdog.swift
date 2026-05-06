@@ -34,11 +34,48 @@ enum TranscribeWatchdog {
 
     /// Default sink: emit at `.error` so the line shows in Console.app even
     /// without Developer logging on. Privacy `.public` because every field
-    /// is operational metadata, not user content.
+    /// is operational metadata, not user content. Then fire `sample(1)`
+    /// against our own PID so the hung thread's stack lands on disk —
+    /// without this, all we know is "MLX call hung" but not WHERE inside
+    /// MLX. With it, we can disambiguate H1 (compressor / mmap fault),
+    /// H2 (Metal command queue wait), H3 (GPU power state), H4 (something
+    /// else) on the next reproduction.
     static func defaultOnTimeout(_ e: Event) {
         Log.asr.error(
             "transcribe watchdog: still running after \(Int(e.thresholdSec), privacy: .public)s callsite=\(e.callsite, privacy: .public) samples=\(e.samples, privacy: .public) lang=\(e.language, privacy: .public) ctxChars=\(e.contextChars, privacy: .public)"
         )
+        captureStack(callsite: e.callsite)
+    }
+
+    /// Spawn `/usr/bin/sample` against our own PID for 3 seconds and write
+    /// its output to `~/Library/Application Support/VoiceTyping/hang-stacks/`.
+    /// Fire-and-forget — we don't wait on the subprocess; if `sample` fails
+    /// to attach (hardened-runtime restrictions on a notarised build, say),
+    /// we just log and move on. The hung thread continues to wait inside
+    /// MLX exactly as before; we're a passive observer.
+    private static func captureStack(callsite: String) {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        guard let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first else { return }
+        let dir = appSupport.appendingPathComponent("VoiceTyping/hang-stacks", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let safeCallsite = callsite.replacingOccurrences(of: "/", with: "_")
+        let outFile = dir.appendingPathComponent("\(stamp)_\(safeCallsite).txt").path
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
+        task.arguments = ["\(pid)", "3", "-file", outFile]
+        do {
+            try task.run()
+            Log.asr.error("transcribe watchdog: sample(1) launched → \(outFile, privacy: .public)")
+        } catch {
+            Log.asr.error("transcribe watchdog: sample(1) failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Run `body` synchronously on the current thread; if it hasn't returned

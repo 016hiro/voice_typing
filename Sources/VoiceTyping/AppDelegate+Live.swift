@@ -186,6 +186,14 @@ extension AppDelegate {
                     }
                     let injStart = Date()
                     let status: DebugCaptureWriter.InjectStatus
+                    // What actually landed in the target app. For the inline
+                    // local-refine path this is the *refined* chunks; for the
+                    // cloud-or-no-refine path it equals `delta`. Used by the
+                    // capture record so `injections.jsonl` matches reality.
+                    // Pre-fix the record showed `delta` for both paths, which
+                    // hid refine output and made dogfood data misread the
+                    // refiner as inactive.
+                    var actualInjected = delta
                     if currentBundleID == frontmostBundleID {
                         if let liveSession = localLiveSession {
                             // Local per-segment streaming refine. We build a
@@ -194,14 +202,17 @@ extension AppDelegate {
                             // leading space its history wouldn't match), then
                             // forwards refined chunks. injectIncremental
                             // pastes at flush boundaries (#R5).
+                            let acc = LiveInjectedChunkAccumulator()
                             let stream = AsyncThrowingStream<String, Error> { continuation in
                                 let task = Task {
                                     if !separator.isEmpty {
                                         continuation.yield(separator)
+                                        acc.append(separator)
                                     }
                                     do {
                                         for try await chunk in liveSession.refineSegmentStream(segment) {
                                             continuation.yield(chunk)
+                                            acc.append(chunk)
                                         }
                                         continuation.finish()
                                     } catch {
@@ -211,6 +222,7 @@ extension AppDelegate {
                                 continuation.onTermination = { _ in task.cancel() }
                             }
                             _ = await injector.injectIncremental(stream: stream)
+                            actualInjected = acc.snapshot
                             // Don't bump segmentCount — there's no raw paste
                             // to undo at session end on this path.
                         } else {
@@ -225,8 +237,8 @@ extension AppDelegate {
                     let injMs = Int(Date().timeIntervalSince(injStart) * 1000)
                     injectWriter?.appendInjection(.init(
                         timestamp: Date(),
-                        chars: delta.count,
-                        textPreview: String(delta.prefix(120)),
+                        chars: actualInjected.count,
+                        textPreview: String(actualInjected.prefix(120)),
                         targetBundleID: frontmostBundleID,
                         actualBundleID: currentBundleID,
                         status: status,
@@ -279,5 +291,23 @@ extension AppDelegate {
         liveInjectTask?.cancel()
         liveInjectTask = nil
         liveSnapshot = nil
+    }
+}
+
+/// Captures the chunks actually yielded into the live-refine inject stream so
+/// the capture record reflects refined text, not the raw segment. Used by
+/// the inline path in `liveInjectTask`. Locked because the producing Task
+/// runs on a different scheduling context from the consumer
+/// (`injector.injectIncremental`) — by the time `injectIncremental` returns,
+/// the producer has finished its for-await loop AND `continuation.finish()`,
+/// so `snapshot` is safe to read.
+private final class LiveInjectedChunkAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+    func append(_ s: String) {
+        lock.withLock { text += s }
+    }
+    var snapshot: String {
+        lock.withLock { text }
     }
 }

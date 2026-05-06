@@ -19,6 +19,11 @@ let package = Package(
         // from mlx-swift-examples). swift-huggingface + swift-transformers
         // are the integration packages plugged in via MLXHuggingFace macros.
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", .upToNextMajor(from: "3.31.3")),
+        // v0.7.1 #B7: direct dep on mlx-swift for `WiredMemoryTicket` /
+        // `WiredMemoryManager` — pins ASR model weight pages so macOS unified-memory
+        // compressor can't evict them while idle. Range pinned to mlx-swift-lm's
+        // own `.upToNextMinor(from: "0.31.3")` to avoid resolver conflicts.
+        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.3")),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
         // Pin to WhisperKit's range (it requires <1.2.0). 1.1.6 already has
         // the `additionalContext:` chat-template overload we need for
@@ -36,6 +41,7 @@ let package = Package(
                 .product(name: "AudioCommon", package: "speech-swift"),
                 .product(name: "SpeechVAD", package: "speech-swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),

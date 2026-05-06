@@ -1,5 +1,6 @@
 import Foundation
 import os
+import MLX
 import Qwen3ASR
 import SpeechVAD
 
@@ -15,6 +16,17 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
     /// Access is serialized by `transcribeLock` (async-safe).
     private var model: Qwen3ASRModel?
     private let transcribeLock = OSAllocatedUnfairLock()
+
+    /// v0.7.1 #B7: `.active` ticket on `WiredMemoryManager.shared` that we
+    /// start once after model load and intentionally never end. Pins MLX
+    /// weight pages in Metal's residency set so macOS unified-memory
+    /// compressor can't evict them — replacing the failed v0.6.4 ASRKeepAlive
+    /// approach (every "warm-up" tick was itself cold-path, see
+    /// `docs/spike/v0.7.1-vad-hang.md`). The reservation kind would be the
+    /// natural fit semantically, but it explicitly does NOT keep the wired
+    /// limit elevated while idle (mlx-swift docs Articles/wired-memory.md
+    /// line 28-30) — which is exactly the window we need to protect.
+    private var weightsWiredTicket: WiredMemoryTicket?
 
     private let stateLock = NSLock()
     private var _state: RecognizerState = .unloaded
@@ -117,6 +129,26 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
             timing.mark(stage: "loaded")
             let loadMs = Int(Date().timeIntervalSince(prepStart) * 1000)
 
+            // v0.7.1 #B7: pin weights against the macOS unified-memory compressor
+            // BEFORE the warm-up dispatch — `Qwen3ASRModel.fromPretrained` only
+            // mmaps the safetensors; pages don't get faulted in until first
+            // inference touches them, and we want them landing already-wired.
+            // Size is ceiling-not-target: setting wired_limit to N means
+            // "don't evict more than N bytes of MLX-allocated GPU residency",
+            // not "allocate N bytes". 1.5 GB safely covers Qwen3-ASR 1.7B 4-bit
+            // (~850 MB weights + Metal scratch headroom) and stays well under
+            // `GPU.maxRecommendedWorkingSetBytes()` on every supported Mac
+            // (smallest 8 GB unified is ~5.6 GB recommended).
+            let policy = WiredSumPolicy()
+            let ticket = WiredMemoryTicket(
+                size: 1_500_000_000,
+                policy: policy,
+                kind: .active
+            )
+            _ = await ticket.start()
+            self.weightsWiredTicket = ticket
+            Log.asr.notice("MLX weights pinned via WiredMemoryTicket (1500MB ceiling)")
+
             // First-inference warmup. Metal kernels JIT on first dispatch, so
             // the first user-visible transcribe used to be 5-10× slower than
             // steady state. Burning 1 s of silence here moves that cost into
@@ -178,19 +210,21 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
                     throw NSError(domain: "VoiceTyping.ASR", code: 1,
                                   userInfo: [NSLocalizedDescriptionKey: "Recognizer not prepared"])
                 }
-                return TranscribeWatchdog.run(
-                    callsite: "batch",
-                    samples: samples.count,
-                    language: lang,
-                    contextChars: ctx?.count ?? 0
-                ) {
-                    model.transcribe(
-                        audio: samples,
-                        sampleRate: sr,
+                return MLXWorkGate.shared.runUser(callsite: "qwen-batch") {
+                    TranscribeWatchdog.run(
+                        callsite: "batch",
+                        samples: samples.count,
                         language: lang,
-                        maxTokens: 448,
-                        context: ctx
-                    )
+                        contextChars: ctx?.count ?? 0
+                    ) {
+                        model.transcribe(
+                            audio: samples,
+                            sampleRate: sr,
+                            language: lang,
+                            maxTokens: 448,
+                            context: ctx
+                        )
+                    }
                 }
             }
         }.value
@@ -214,7 +248,14 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
     /// one FFT window (400 samples); both conditions are silently dropped
     /// rather than throwing because mid-stream errors would tear down the
     /// live session for what's typically a transient or trivial cause.
-    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> (text: String, lockWaitMs: Int) {
+    ///
+    /// `maxTokens` defaults to 448 — the standard cap for live/batch user
+    /// speech. `ASRKeepAlive` overrides to a tiny value (~4) because its
+    /// silent-buffer dummy transcribe can run the full 448-token budget on
+    /// cold MLX, taking 30-45 s per tick; truncating decode after a handful
+    /// of tokens still warms the encoder + first decoder pass which is what
+    /// the keep-alive cares about.
+    func transcribeSegmentSync(samples: [Float], language: String, context: String?, maxTokens: Int = 448) -> (text: String, lockWaitMs: Int) {
         // v0.7.1 #B6: track wait-for-lock so the live pump can record contention
         // separately from transcribe time. Lock acquired BEFORE the early-return
         // branch is also recorded so an empty buffer at the back of a long lock
@@ -232,7 +273,7 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
             ) {
                 model.transcribe(
                     audio: samples, sampleRate: 16000,
-                    language: language, maxTokens: 448, context: context
+                    language: language, maxTokens: maxTokens, context: context
                 )
             }
             return (text, lockWaitMs)
@@ -244,6 +285,14 @@ public final class QwenASRRecognizer: SpeechRecognizer, @unchecked Sendable {
         transcribeLock.withLock {
             model?.unload()
             model = nil
+        }
+        // v0.7.1 #B7: release the wired-memory ticket so the next backend
+        // (Whisper / a different Qwen variant) starts from baseline. Fire-and-
+        // forget: `end()` is async-on-actor; the exact moment wired_limit drops
+        // doesn't matter because nothing is reading the model at this point.
+        if let t = weightsWiredTicket {
+            weightsWiredTicket = nil
+            Task { _ = await t.end() }
         }
         setState(.unloaded)
     }
@@ -474,16 +523,18 @@ public extension QwenASRRecognizer {
                 // Same minimum-FFT-window guard as the batch path: <400 samples
                 // crashes WhisperFeatureExtractor's reflect padding.
                 guard segAudio.count >= 400 else { return }
-                let text = TranscribeWatchdog.run(
-                    callsite: "stream-segment",
-                    samples: segAudio.count,
-                    language: lang,
-                    contextChars: ctx?.count ?? 0
-                ) {
-                    asr.transcribe(
-                        audio: segAudio, sampleRate: 16000,
-                        language: lang, maxTokens: 448, context: ctx
-                    )
+                let text = MLXWorkGate.shared.runUser(callsite: "qwen-stream-segment") {
+                    TranscribeWatchdog.run(
+                        callsite: "stream-segment",
+                        samples: segAudio.count,
+                        language: lang,
+                        contextChars: ctx?.count ?? 0
+                    ) {
+                        asr.transcribe(
+                            audio: segAudio, sampleRate: 16000,
+                            language: lang, maxTokens: 448, context: ctx
+                        )
+                    }
                 }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
@@ -506,7 +557,8 @@ public extension QwenASRRecognizer {
                 try Task.checkCancellation()
 
                 let end = min(offset + chunkSize, samples.count)
-                let events = processor.process(samples: Array(samples[offset..<end]))
+                let chunk = Array(samples[offset..<end])
+                let events = processor.process(samples: chunk)
 
                 for event in events {
                     switch event {
@@ -575,9 +627,43 @@ public extension QwenASRRecognizer {
         return candidate
     }
 
+    /// Load a fresh Silero VAD instance.
+    ///
+    /// `.coreml` engine routes Silero through ANE+CPU, *not* GPU/MLX, which
+    /// is the v0.7.1 #B6 fix for the live-mode VAD hang: the hang was caused
+    /// by MLX's per-CompiledFunction `NSRecursiveLock` covering
+    /// `waitUntilCompleted` on the GPU event, so any other MLX caller (Qwen
+    /// transcribe, refiner, ASR keep-alive) blocked behind a slow Silero
+    /// forward — and vice versa. Switching VAD off MLX removes Silero from
+    /// that contention surface entirely.
+    ///
+    /// `.coreml` weights are downloaded from HuggingFace on first run
+    /// (`aufklarer/Silero-VAD-v5-CoreML`). The bundled `Resources/SileroVAD/`
+    /// only contains MLX weights — used as a safety fallback if CoreML load
+    /// fails (no network on first run, missing ANE, etc.).
+    static func makeSileroVADModel(engine: SileroVADEngine = .coreml) async throws -> SileroVADModel {
+        switch engine {
+        case .coreml:
+            Log.asr.notice("Loading Silero VAD via CoreML (ANE) — first run downloads from HF")
+            return try await SileroVADModel.fromPretrained(engine: .coreml)
+        case .mlx:
+            if let bundled = bundledVADCacheDir() {
+                Log.dev(Log.asr, "Loading Silero VAD via MLX from app bundle: \(bundled.path)")
+                return try await SileroVADModel.fromPretrained(
+                    cacheDir: bundled, offlineMode: true
+                )
+            } else {
+                Log.dev(Log.asr, "Silero VAD MLX bundle missing — falling back to HuggingFace cache")
+                return try await SileroVADModel.fromPretrained(engine: .mlx)
+            }
+        }
+    }
+
     /// Serialises concurrent first-time loads and caches the result. Returns a
-    /// `SharedVADBox` because `SileroVADModel` itself isn't Sendable — callers
-    /// unwrap `.model` inside their own serialised region (e.g. under `transcribeLock`).
+    /// `SharedVADBox` because `SileroVADModel` itself isn't Sendable and
+    /// carries mutable streaming state. Live / post-record / hands-free pumps
+    /// are mutually exclusive on this instance; keep-alive uses a dedicated
+    /// model instance instead of sharing this one.
     actor VADActor {
         private var box: SharedVADBox?
         private var inflight: Task<SharedVADBox, Error>?
@@ -587,17 +673,19 @@ public extension QwenASRRecognizer {
             if let inflight { return try await inflight.value }
 
             let task = Task {
-                let model: SileroVADModel
-                if let bundled = QwenASRRecognizer.bundledVADCacheDir() {
-                    Log.dev(Log.asr, "Loading Silero VAD from app bundle: \(bundled.path)")
-                    model = try await SileroVADModel.fromPretrained(
-                        cacheDir: bundled, offlineMode: true
-                    )
-                } else {
-                    Log.dev(Log.asr, "Silero VAD not bundled — falling back to HuggingFace cache")
-                    model = try await SileroVADModel.fromPretrained()
+                // Try CoreML first (the v0.7.1 #B6 fix path), fall back to
+                // bundled MLX if CoreML fails — typically on first run with
+                // no network, since CoreML weights aren't bundled. MLX
+                // fallback re-introduces the lock contention bug, but the
+                // user gets some VAD instead of none.
+                do {
+                    let model = try await QwenASRRecognizer.makeSileroVADModel(engine: .coreml)
+                    return SharedVADBox(model)
+                } catch {
+                    Log.asr.warning("Silero CoreML load failed (\(error.localizedDescription, privacy: .public)) — falling back to MLX bundle")
+                    let model = try await QwenASRRecognizer.makeSileroVADModel(engine: .mlx)
+                    return SharedVADBox(model)
                 }
-                return SharedVADBox(model)
             }
             inflight = task
             do {
@@ -614,8 +702,16 @@ public extension QwenASRRecognizer {
 }
 
 /// Sendable conduit for `SileroVADModel`, which upstream hasn't marked Sendable.
-/// Access to `.model` must happen inside a serialised region (we use `transcribeLock`).
+/// Access to `.model` must happen inside a serialised region — live mode owns
+/// it exclusively while the pump task runs (post-record / hands-free pumps are
+/// mutually exclusive with live). With v0.7.1 #B6's drop of `VADKeepAlive`
+/// and switch to CoreML for the live VAD engine, there are no other concurrent
+/// callers, so no cross-caller lock is needed here.
 final class SharedVADBox: @unchecked Sendable {
     let model: SileroVADModel
     init(_ model: SileroVADModel) { self.model = model }
+
+    /// Engine description for logs — the CoreML vs MLX distinction matters
+    /// for diagnosis (only MLX path can deadlock against Qwen transcribe).
+    var engineDescription: String { model.engine.rawValue }
 }

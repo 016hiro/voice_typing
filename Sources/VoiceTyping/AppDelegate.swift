@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let fnMonitor = FnHotkeyMonitor()
     /// v0.6.4: anti-compressor keep-alive for Qwen MLX weights. Started when
     /// the recognizer reaches `.ready`, stopped on swap / non-ready / quit.
+    /// v0.7.1 #B6 follow-up: now gated through `MLXWorkGate.shared` so a tick
+    /// that is queued while the user is mid-transcribe gets denied instead of
+    /// piling onto MLX's per-CompiledFunction lock.
     let asrKeepAlive = ASRKeepAlive()
 
     /// On-device MLX refiner — held as a singleton so the actor's lazy load +
@@ -365,6 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // an in-flight tick can't dispatch against a model we're about to
         // unload. New recognizer's state observer re-starts it on `.ready`.
         asrKeepAlive.stop()
+        cachedVADBox = nil
 
         // Unload old Qwen to free weights (WhisperKit doesn't expose unload).
         if let old = recognizer as? QwenASRRecognizer {
@@ -434,12 +438,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // it fails (e.g. SpeechVAD bundle missing in dev build), live mode
         // simply falls back to batch this run.
         if backend.isQwen {
-            Task.detached { [weak self] in
+            Task.detached { [weak self, backend] in
                 do {
                     let box = try await QwenASRRecognizer.vadActor.get()
                     await MainActor.run { [weak self] in
-                        self?.cachedVADBox = box
-                        Log.dev(Log.app, "Live: VAD pre-warmed and cached")
+                        guard let self, self.activeBackend == backend else { return }
+                        self.cachedVADBox = box
+                        Log.dev(Log.app, "Live: VAD pre-warmed and cached (engine=\(box.engineDescription))")
                     }
                 } catch {
                     Log.app.warning("Live: VAD pre-warm failed (\(error.localizedDescription, privacy: .public)) — live mode will fall back to batch")

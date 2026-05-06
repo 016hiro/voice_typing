@@ -103,6 +103,22 @@ final class ASRKeepAliveTests: XCTestCase {
         XCTAssertNil(fake.lastContext, "Keep-alive must not ride glossary biasing")
     }
 
+    func testTick_CapsMaxTokensTo4() {
+        // Silent input has no real EOS signal — the decoder can run the full
+        // 448-token budget on a cold path → 30-45 s per tick (see dogfood
+        // session 2026-05-04_15-24-38). The keep-alive must cap at a small
+        // number so worst-case cold-tick stays bounded.
+        let fake = FakeKeepAliveTarget()
+        fake.setState(.ready)
+        let ka = ASRKeepAlive()
+        ka.start(target: fake)
+        ka.tick()
+        ka.stop()
+        XCTAssertEqual(fake.lastMaxTokens, ASRKeepAlive.dummyMaxTokens)
+        XCTAssertLessThanOrEqual(ASRKeepAlive.dummyMaxTokens, 16,
+                                 "Bumping past ~16 tokens defeats the cap; revisit keep-alive design first.")
+    }
+
     // MARK: - start() target replacement
 
     func testStart_ReplacesPreviousTarget() {
@@ -185,12 +201,19 @@ private final class FakeKeepAliveTarget: KeepAliveTarget, @unchecked Sendable {
         return _lastContext
     }
 
-    func transcribeSegmentSync(samples: [Float], language: String, context: String?) -> (text: String, lockWaitMs: Int) {
+    private var _lastMaxTokens: Int?
+    var lastMaxTokens: Int? {
+        lock.lock(); defer { lock.unlock() }
+        return _lastMaxTokens
+    }
+
+    func transcribeSegmentSync(samples: [Float], language: String, context: String?, maxTokens: Int) -> (text: String, lockWaitMs: Int) {
         lock.lock()
         _tickCount += 1
         _lastSamples = samples
         _lastLanguage = language
         _lastContext = context
+        _lastMaxTokens = maxTokens
         lock.unlock()
         return ("", 0)
     }
