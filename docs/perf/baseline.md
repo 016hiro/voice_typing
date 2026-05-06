@@ -216,7 +216,7 @@ vs healthy baseline 99-550ms. Slowdown 17-56×.
 **Trigger mechanism (corrected)**: not swap pressure (free RAM was 8 GB at observation), but macOS **compressor** subsystem deciding 2.5 GB of unused mmap'd weights are "cold" and squeezing them into ~80 MB compressed segment. Decompression on next access is the latency hit.
 
 **Decision split (per user 2026-04-29)**:
-- ASR weights — **MUST stay warm** (every Fn press is critical-path; user can't tolerate "wait 10s before first word transcribes"). Triggers v0.6.4 keep-alive patch (see [`docs/todo/v0.6.4.md`](../todo/v0.6.4.md))
+- ASR weights — **MUST stay warm** (every Fn press is critical-path; user can't tolerate "wait 10s before first word transcribes"). v0.7.1 #B7 pins them via mlx-swift's `WiredMemoryTicket(.active)` — see [`docs/decisions/0002-pin-mlx-weights-not-keep-alive.md`](../decisions/0002-pin-mlx-weights-not-keep-alive.md). The earlier v0.6.4 periodic-dummy-inference approach was torn out in v0.7.1 #B8; dogfood proved it didn't actually keep weights warm.
 - Refiner weights — **OK to be compressed** (refine has built-in "wait" UX, cold decompress 5-30s acceptable). v0.6.3 LocalMLXRefiner won't be kept warm, just labeled "warming up..." in capsule on first refine after long idle
 
 ### 4. ANE contention is a non-issue for our usage pattern
