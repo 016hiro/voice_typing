@@ -202,6 +202,7 @@ extension AppDelegate {
                             // leading space its history wouldn't match), then
                             // forwards refined chunks. injectIncremental
                             // pastes at flush boundaries (#R5).
+                            let refineStarted = Date()
                             let acc = LiveInjectedChunkAccumulator()
                             let stream = AsyncThrowingStream<String, Error> { continuation in
                                 let task = Task {
@@ -223,6 +224,30 @@ extension AppDelegate {
                             }
                             _ = await injector.injectIncremental(stream: stream)
                             actualInjected = acc.snapshot
+                            // v0.7.3 #B1: per-segment refine telemetry. Until
+                            // now this path wrote nothing to refines.jsonl —
+                            // the AppDelegate session-end refine block
+                            // (`!liveResult.refinedInline`) skips local-live
+                            // entirely, so cloud↔local A/B and cold-path
+                            // dogfood data was lost for the path most users
+                            // run. Wall-clock latency includes the inject
+                            // paste (~5-50 ms); ground-truth `infer_ms` still
+                            // lives in oslog via LocalLiveSegmentSession.
+                            // Skip on empty output (refine no-op / failure).
+                            let refinedOutput = acc.snapshot
+                            if !refinedOutput.isEmpty {
+                                injectWriter?.appendRefine(.init(
+                                    timestamp: refineStarted,
+                                    input: segment,
+                                    output: refinedOutput,
+                                    mode: refineMode.rawValue,
+                                    backend: "local",
+                                    latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
+                                    glossary: segmentGlossary,
+                                    profileSnippet: profileSnippet,
+                                    rawFirst: false
+                                ))
+                            }
                             // Don't bump segmentCount — there's no raw paste
                             // to undo at session end on this path.
                         } else {
