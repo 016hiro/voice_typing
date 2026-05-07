@@ -75,6 +75,9 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let endSec: Double
         let rawText: String           // before HallucinationFilter
         let filter: FilterDecision
+        /// v0.7.3 #B6: which HallucinationFilter layer dropped this segment
+        /// — see `HallucinationFilter.FilterReason`. `nil` when `filter == .kept`.
+        var filterReason: String? = nil
         let transcribeMs: Int
 
         /// v0.7.1 #B6 dogfood follow-up: per-segment pump-health snapshot.

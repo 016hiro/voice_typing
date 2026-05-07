@@ -52,6 +52,9 @@ final class LiveTranscriber: @unchecked Sendable {
     struct SegmentEvent: Sendable {
         let rawText: String
         let kept: Bool
+        /// v0.7.3 #B6: which HallucinationFilter layer dropped this segment.
+        /// `nil` when `kept == true`.
+        let filterReason: HallucinationFilter.FilterReason?
         let startSec: Double
         let endSec: Double
         let transcribeMs: Int
@@ -244,11 +247,14 @@ final class LiveTranscriber: @unchecked Sendable {
             // Same hallucination filter v0.4.5 added on the batch streaming path.
             // Drops training-data tails (`谢谢观看`, `Thank you.`) and segments
             // that echo the bias `context` we passed (the `热词：…` regurgitation
-            // observed on noisy short input).
-            let kept = !HallucinationFilter.isLikelyHallucination(segment: trimmed, context: ctx)
+            // observed on noisy short input). v0.7.3 #B6: classify return so
+            // segments.jsonl can record which layer fired.
+            let filterReason = HallucinationFilter.classify(segment: trimmed, context: ctx)
+            let kept = (filterReason == nil)
             observer?(SegmentEvent(
                 rawText: trimmed,
                 kept: kept,
+                filterReason: filterReason,
                 startSec: startSec,
                 endSec: endSec,
                 transcribeMs: transcribeMs,

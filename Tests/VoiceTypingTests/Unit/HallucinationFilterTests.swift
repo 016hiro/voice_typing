@@ -159,4 +159,74 @@ final class HallucinationFilterTests: XCTestCase {
         XCTAssertFalse(HallucinationFilter.isLikelyHallucination(segment: "", context: nil))
         XCTAssertFalse(HallucinationFilter.isLikelyHallucination(segment: "   ", context: nil))
     }
+
+    // MARK: - v0.7.3 #B6: classify reason + single-hotword false-positive fix
+
+    /// User dictates a single hotword (or a short phrase quoting one) and
+    /// presses Fn↑. The hotword is in the dict and therefore in the bias
+    /// context — under v0.4.5..v0.7.2 this was filtered as "echo" because
+    /// the long context trivially contained the 4-5 char normalized
+    /// segment. v0.7.3 dropped that direction.
+    func testEcho_SingleHotwordSegment_NoLongerFiltered() {
+        let ctx = "热词：Rust、Python、Qwen3-ASR、VAD、E2E、SwiftUI、AppKit、TIS。"
+        let cases = ["Qwen", "Rust", "VAD", "Python"]
+        for c in cases {
+            XCTAssertFalse(
+                HallucinationFilter.isLikelyHallucination(segment: c, context: ctx),
+                "single hotword from dict must NOT be filtered as echo: \(c)"
+            )
+            XCTAssertNil(
+                HallucinationFilter.classify(segment: c, context: ctx),
+                "classify must return nil for single-hotword utterance: \(c)"
+            )
+        }
+    }
+
+    /// The actual failure mode Layer 2b is supposed to catch — Qwen
+    /// regurgitating the *whole* hotword list as one segment — must still
+    /// fire after v0.7.3 trimmed the inverse direction.
+    func testEcho_FullContextRegurgitation_StillFiltered() {
+        let ctx = "Rust, Python, Qwen3-ASR, VAD, E2E"
+        XCTAssertEqual(
+            HallucinationFilter.classify(segment: "Rust, Python, Qwen3-ASR, VAD, E2E", context: ctx),
+            .promptEchoSubstring
+        )
+        XCTAssertEqual(
+            HallucinationFilter.classify(segment: "Rust, Python, Qwen3-ASR, VAD, E2E.", context: ctx),
+            .promptEchoSubstring
+        )
+    }
+
+    func testClassify_LayerLabels() {
+        // Layer 1 — blacklist
+        XCTAssertEqual(
+            HallucinationFilter.classify(segment: "Thank you.", context: nil),
+            .blacklist
+        )
+        XCTAssertEqual(
+            HallucinationFilter.classify(segment: "谢谢观看", context: nil),
+            .blacklist
+        )
+
+        // Layer 2a — Chinese prefix
+        XCTAssertEqual(
+            HallucinationFilter.classify(segment: "热词：Rust、Python", context: nil),
+            .promptEchoChinesePrefix
+        )
+
+        // Layer 2b — substring (segment contains full normalized context)
+        XCTAssertEqual(
+            HallucinationFilter.classify(
+                segment: "Rust, Python, Qwen3-ASR, VAD, E2E.",
+                context: "Rust, Python, Qwen3-ASR, VAD, E2E"
+            ),
+            .promptEchoSubstring
+        )
+
+        // kept
+        XCTAssertNil(HallucinationFilter.classify(
+            segment: "我用 Rust 写了一个小工具",
+            context: "热词：Rust、Python、Qwen3-ASR、VAD、E2E、SwiftUI。"
+        ))
+    }
 }

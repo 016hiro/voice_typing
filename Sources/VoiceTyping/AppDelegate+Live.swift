@@ -125,6 +125,7 @@ extension AppDelegate {
                     endSec: event.endSec,
                     rawText: event.rawText,
                     filter: event.kept ? .kept : .hallucinationFiltered,
+                    filterReason: event.filterReason?.rawValue,
                     transcribeMs: event.transcribeMs,
                     lockWaitMs: event.lockWaitMs,
                     chunkLagMaxMs: event.chunkLagMaxMs,

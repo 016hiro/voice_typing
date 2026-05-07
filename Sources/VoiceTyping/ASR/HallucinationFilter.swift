@@ -14,47 +14,73 @@ import Foundation
 ///   by comparing the segment against the actual `context` we passed in.
 public enum HallucinationFilter {
 
-    /// Returns true if `segment` should be discarded — either matches a known
-    /// training tail or echoes the bias prompt we passed Qwen for this run.
-    public static func isLikelyHallucination(segment: String, context: String?) -> Bool {
+    /// v0.7.3 #B6: which layer dropped this segment. `nil` = kept.
+    /// Recorded in `segments.jsonl.filterReason` so dogfood analysis can
+    /// see *why* — the previous binary `kept`/`hallucinationFiltered` flag
+    /// hid which layer was producing the false-positive of the moment.
+    public enum FilterReason: String, Sendable, Codable {
+        /// Layer 1 — segment matches a known training-data tail (`谢谢观看`,
+        /// `Thank you.`, `♪`, …).
+        case blacklist
+        /// Layer 2a — segment starts with `热词：` / `热词:`, the deterministic
+        /// Chinese signal of bias-prompt echo.
+        case promptEchoChinesePrefix
+        /// Layer 2b — `normalized.contains(normalizedCtx)` — segment fully
+        /// reproduces the bias context (English bare-comma form, or zh form
+        /// that Qwen mangled past the `^热词` fast-path).
+        case promptEchoSubstring
+    }
+
+    /// Returns the reason this segment should be discarded, or `nil` if it
+    /// should pass through.
+    public static func classify(segment: String, context: String?) -> FilterReason? {
         let trimmed = segment.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.isEmpty else { return nil }
 
         // Layer 1: known training tails. Compare on normalized form so
         // `"Yeah."`, `"yeah"`, and `"YEAH!"` all match the same entry.
         let normalized = normalize(trimmed)
-        if blacklistNormalized.contains(normalized) { return true }
+        if blacklistNormalized.contains(normalized) { return .blacklist }
 
         // Layer 2a: deterministic Chinese prompt-echo signal. A real human
         // dictating into an input method does not start with `热词：` — that
         // string only appears as the prefix of our own bias context.
         if trimmed.hasPrefix("热词:") || trimmed.hasPrefix("热词：") {
-            return true
+            return .promptEchoChinesePrefix
         }
 
-        // Layer 2b: prompt-echo via substring containment. Catches the
-        // English bare-comma form (`"Rust, Python, Qwen3-ASR, VAD, E2E"`)
-        // and any zh form Qwen mangles past the `^热词` fast-path.
+        // Layer 2b: prompt-echo via segment containing the full context
+        // (English bare-comma form, or zh form that Qwen mangled past the
+        // `^热词` fast-path). v0.7.3 dropped the inverse direction
+        // (`normalizedCtx.contains(normalized)`): with hotwords like "Rust"
+        // / "Qwen" / "VAD" in the dict, single-word user utterances
+        // normalize to a 4-5 char string that the long context trivially
+        // contains, falsely flagging legitimate one-word dictation as
+        // echo. The remaining direction still catches the actual failure
+        // mode — Qwen regurgitating the *whole* hotword list as one
+        // segment.
         guard let raw = context?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else {
-            return false
+            return nil
         }
         let normalizedCtx = normalize(raw)
         // Guard against pathological short contexts: a 1-term dictionary
-        // ("Linus") would normalize to 5 chars, and any segment containing
-        // "Linus" would test true. Require enough context that substring
-        // overlap genuinely indicates echo, not coincidence.
-        guard normalizedCtx.count >= 12 else { return false }
+        // ("Linus") would normalize to 5 chars and the substring test
+        // would fire on any segment that quotes the term. Require enough
+        // context that overlap genuinely indicates echo, not coincidence.
+        guard normalizedCtx.count >= 12 else { return nil }
 
-        // Echo manifests as: segment matches the prompt exactly, is a
-        // prefix/substring of it, or contains it (rare — Qwen sometimes
-        // adds a trailing "好的"). All three cases are caught by mutual
-        // substring containment.
-        if normalizedCtx.contains(normalized) || normalized.contains(normalizedCtx) {
-            return true
+        if normalized.contains(normalizedCtx) {
+            return .promptEchoSubstring
         }
 
-        return false
+        return nil
+    }
+
+    /// Bool wrapper for callsites that don't care which layer fired.
+    /// Matches the v0.4.5+ public API; new code should prefer `classify`.
+    public static func isLikelyHallucination(segment: String, context: String?) -> Bool {
+        return classify(segment: segment, context: context) != nil
     }
 
     // MARK: - Static blacklist
