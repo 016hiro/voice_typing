@@ -395,7 +395,7 @@ public extension QwenASRRecognizer {
         /// baseline so the benchmark and any opt-out caller can compare.
         public static let `default` = StreamingTuning()
 
-        /// v0.5.0 shipping defaults: `minSpeech 0.3s, minSilence 0.7s, no padding,
+        /// v0.7.3 shipping defaults: `minSpeech 0.3s, minSilence 1.5s, no padding,
         /// force-split 25s`.
         ///
         /// History:
@@ -408,9 +408,16 @@ public extension QwenASRRecognizer {
         ///   well inside. A user talking continuously for 15-20 s used to take a
         ///   force-split mid-word at 10 s; raising the threshold avoids that for
         ///   nearly all natural utterances. Validated by `make benchmark-vad`.
+        /// - v0.7.3 raised `minSilenceDuration` 0.7 → 1.5. Live mode + clean-up
+        ///   refiner was over-segmenting on natural mid-thought pauses (~0.8-1.2s):
+        ///   each split spawned an inline local refine, paying the per-call
+        ///   chat-session + decode overhead twice for what should be one segment.
+        ///   1.5s tolerates normal speech rhythm without merging actual
+        ///   utterance boundaries. `maxSegmentDuration=25s` is the safety cap
+        ///   for users who don't pause at all.
         public static let production = StreamingTuning(
             minSpeechDuration: 0.3,
-            minSilenceDuration: 0.7,
+            minSilenceDuration: 1.5,
             paddingSeconds: 0,
             maxSegmentDuration: 25.0
         )
