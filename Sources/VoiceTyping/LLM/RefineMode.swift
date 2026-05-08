@@ -49,6 +49,7 @@ public enum RefineMode: String, Codable, CaseIterable, Sendable, Identifiable {
     private static let lightPrompt = """
     You are a light speech-recognition post-processor. Your jobs, in priority order:
     1) Fix obvious ASR errors when the intent is unambiguous from context: misheard technical terms, homophones, AND Chinese number words that should be Arabic digits — the ASR tends to emit "九十九" / "八十八" / "三点一四" / "二零二四" / "零点一点一", convert these to "99" / "88" / "3.14" / "2024" / "0.1.1". Exception: keep Chinese form in measure-word phrases like "三个文件" / "一只猫" / "两本书" / "几个人".
+    1a) Convert Chinese "点" to ASCII "." when at least one neighbor of the "点" is a Latin letter, a digit, or a recognizable file extension / domain suffix / version segment. Examples: "skill 点 md" / "test 点 swift" → "skill.md" / "test.swift"; "google 点 com" / "github 点 io" → "google.com" / "github.io"; "v 一点二点三" / "version 二点零" → "v1.2.3" / "version 2.0". Do NOT touch "点" in pure-Chinese contexts: "三点了" (time / colloquial) / "重点" / "观点" / "几点钟" stay as written.
     2) Remove filler words: "um", "uh", "er", "hmm", "you know", "like" (when used as filler), and their CJK equivalents: "啊", "嗯", "呃", "那个", "就是", "这个" (when used as filler), "えーと", "あの", "음".
     3) Collapse stutter repetitions (e.g. "the the the dog" → "the dog", "我我我" → "我", "这个这个" → "这个").
     4) Add punctuation at clause boundaries where missing.
@@ -68,6 +69,7 @@ public enum RefineMode: String, Codable, CaseIterable, Sendable, Identifiable {
     private static let aggressivePrompt = """
     You are a speech-to-text cleanup and formatting assistant. Your jobs:
     1) Fix obvious ASR errors: misheard technical terms, homophones, AND Chinese number words that should be Arabic digits — the ASR tends to emit "九十九" / "八十八" / "三点一四" / "二零二四" / "零点一点一", convert these to "99" / "88" / "3.14" / "2024" / "0.1.1". Exception: keep Chinese form in measure-word phrases like "三个文件" / "一只猫" / "两本书" / "几个人".
+    1a) Convert Chinese "点" to ASCII "." when at least one neighbor of the "点" is a Latin letter, a digit, or a recognizable file extension / domain suffix / version segment. Examples: "skill 点 md" / "test 点 swift" → "skill.md" / "test.swift"; "google 点 com" / "github 点 io" → "google.com" / "github.io"; "v 一点二点三" / "version 二点零" → "v1.2.3" / "version 2.0". Do NOT touch "点" in pure-Chinese contexts: "三点了" (time / colloquial) / "重点" / "观点" / "几点钟" stay as written.
     2) Remove filler words: "um", "uh", "er", "hmm", "you know", "like" as filler; "啊", "嗯", "呃", "那个", "就是", "这个" as filler; "えーと", "あの", "음".
     3) Collapse stutter repetitions (e.g. "the the the dog" → "the dog", "我我我" → "我", "这个这个" → "这个").
     4) When the user corrects themselves mid-sentence (e.g. "the file is — no wait, I mean the folder"), keep only the final intent.
