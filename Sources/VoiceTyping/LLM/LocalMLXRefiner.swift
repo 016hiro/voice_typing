@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXLLM
 import MLXLMCommon
 import MLXHuggingFace
@@ -36,6 +37,16 @@ actor LocalMLXRefiner: LLMRefining {
 
     init(modelDirectory: URL = ModelStore.localRefinerDirectory) {
         self.modelDirectory = modelDirectory
+    }
+
+    /// v0.7.3 #B8a: process-wide MLX memory snapshot in MB. Shared between
+    /// ASR (Qwen) and refiner — both feed the same MLX allocator pool, so
+    /// the values reflect total MLX footprint at the time of call.
+    /// Use case: log per-refine to characterize cacheMemory growth over a
+    /// long-running process before/after #B8b sets a `cacheLimit`.
+    nonisolated static func memSnapshotMb() -> (active: Int, cache: Int, peak: Int) {
+        let snap = MLX.Memory.snapshot()
+        return (snap.activeMemory / 1_000_000, snap.cacheMemory / 1_000_000, snap.peakMemory / 1_000_000)
     }
 
     nonisolated func refine(_ text: String,

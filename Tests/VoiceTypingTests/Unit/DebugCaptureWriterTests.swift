@@ -167,7 +167,10 @@ final class DebugCaptureWriterTests: XCTestCase {
             latencyMs: 312,
             glossary: "热词：World, Hello",
             profileSnippet: nil,
-            rawFirst: false
+            rawFirst: false,
+            mlxActiveMb: nil,
+            mlxCacheMb: nil,
+            mlxPeakMb: nil
         )
         let r2 = DebugCaptureWriter.RefineRecord(
             timestamp: Date(),
@@ -178,7 +181,10 @@ final class DebugCaptureWriterTests: XCTestCase {
             latencyMs: 745,
             glossary: nil,
             profileSnippet: "Prefer terse, technical phrasing.",
-            rawFirst: true
+            rawFirst: true,
+            mlxActiveMb: 2400,
+            mlxCacheMb: 320,
+            mlxPeakMb: 2700
         )
         writer.appendRefine(r1)
         writer.appendRefine(r2)
@@ -205,6 +211,18 @@ final class DebugCaptureWriterTests: XCTestCase {
         XCTAssertEqual(first["latencyMs"] as? Int, 312)
         XCTAssertEqual(first["glossary"] as? String, "热词：World, Hello")
         XCTAssertEqual(first["rawFirst"] as? Bool, false)
+        // r1 has nil MLX fields → encoder must omit them (not emit `null`)
+        // so `defaults skipsNilValues` Codable contract holds for old-reader compat
+        XCTAssertNil(first["mlxCacheMb"])
+
+        // v0.7.3 #B8a: second line carries non-nil MB fields → must be present
+        guard let secondData = lines[1].data(using: .utf8),
+              let second = try JSONSerialization.jsonObject(with: secondData) as? [String: Any] else {
+            XCTFail("second refine line must be parseable JSON object"); return
+        }
+        XCTAssertEqual(second["mlxActiveMb"] as? Int, 2400)
+        XCTAssertEqual(second["mlxCacheMb"] as? Int, 320)
+        XCTAssertEqual(second["mlxPeakMb"] as? Int, 2700)
 
         // 3. Meta.totalRefines reflects the count after finalize
         let meta = try loadMeta(at: writer.folder.appendingPathComponent("meta.json"))
@@ -222,7 +240,8 @@ final class DebugCaptureWriterTests: XCTestCase {
 
         writer.appendRefine(.init(timestamp: Date(), input: "late", output: "late",
                                    mode: "light", backend: "cloud",
-                                   latencyMs: 100, glossary: nil, profileSnippet: nil, rawFirst: false))
+                                   latencyMs: 100, glossary: nil, profileSnippet: nil, rawFirst: false,
+                                   mlxActiveMb: nil, mlxCacheMb: nil, mlxPeakMb: nil))
         drain(writer)
 
         let jsonlURL = writer.folder.appendingPathComponent("refines.jsonl")

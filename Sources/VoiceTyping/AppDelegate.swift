@@ -771,6 +771,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     tracker.mark(.llmEnd)
                     let trimmedRefined = refined.trimmingCharacters(in: .whitespacesAndNewlines)
 
+                    let mlx = LocalMLXRefiner.memSnapshotMb()
+                    Log.llm.notice("MLX mem after refine: active=\(mlx.active, privacy: .public)MB cache=\(mlx.cache, privacy: .public)MB peak=\(mlx.peak, privacy: .public)MB backend=\(refineCaptureBackend, privacy: .public)")
                     captureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
                         timestamp: refineStarted,
                         input: trimmed,
@@ -780,7 +782,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
                         glossary: glossary,
                         profileSnippet: profileSnippet,
-                        rawFirst: false
+                        rawFirst: false,
+                        mlxActiveMb: mlx.active,
+                        mlxCacheMb: mlx.cache,
+                        mlxPeakMb: mlx.peak
                     ))
 
                     // Replace only if refine actually changed something AND
@@ -1002,6 +1007,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 profileSnippet: profileSnippet
             )
             tracker.mark(.llmEnd)
+            let mlx = LocalMLXRefiner.memSnapshotMb()
+            Log.llm.notice("MLX mem after refine: active=\(mlx.active, privacy: .public)MB cache=\(mlx.cache, privacy: .public)MB peak=\(mlx.peak, privacy: .public)MB backend=\(refineCaptureBackend, privacy: .public)")
             captureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
                 timestamp: refineStarted,
                 input: raw,
@@ -1011,7 +1018,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
                 glossary: glossary,
                 profileSnippet: profileSnippet,
-                rawFirst: false
+                rawFirst: false,
+                mlxActiveMb: mlx.active,
+                mlxCacheMb: mlx.cache,
+                mlxPeakMb: mlx.peak
             ))
             finalText = refined
 
@@ -1130,6 +1140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tracker.mark(.injectEnd)
         tracker.mark(.llmEnd)
 
+        let mlx = LocalMLXRefiner.memSnapshotMb()
+        Log.llm.notice("MLX mem after refine: active=\(mlx.active, privacy: .public)MB cache=\(mlx.cache, privacy: .public)MB peak=\(mlx.peak, privacy: .public)MB backend=\(refineCaptureBackend, privacy: .public)")
         captureWriter?.appendRefine(DebugCaptureWriter.RefineRecord(
             timestamp: refineStarted,
             input: raw,
@@ -1139,7 +1151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
             glossary: glossary,
             profileSnippet: profileSnippet,
-            rawFirst: false
+            rawFirst: false,
+            mlxActiveMb: mlx.active,
+            mlxCacheMb: mlx.cache,
+            mlxPeakMb: mlx.peak
         ))
 
         let llmHits = GlossaryBuilder.matchedEntryIDs(in: result.accumulated, entries: dictEntries)

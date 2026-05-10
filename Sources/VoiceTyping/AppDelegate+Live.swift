@@ -237,6 +237,8 @@ extension AppDelegate {
                             // Skip on empty output (refine no-op / failure).
                             let refinedOutput = acc.snapshot
                             if !refinedOutput.isEmpty {
+                                let mlx = LocalMLXRefiner.memSnapshotMb()
+                                Log.llm.notice("MLX mem after refine: active=\(mlx.active, privacy: .public)MB cache=\(mlx.cache, privacy: .public)MB peak=\(mlx.peak, privacy: .public)MB backend=local")
                                 injectWriter?.appendRefine(.init(
                                     timestamp: refineStarted,
                                     input: segment,
@@ -246,7 +248,10 @@ extension AppDelegate {
                                     latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
                                     glossary: segmentGlossary,
                                     profileSnippet: profileSnippet,
-                                    rawFirst: false
+                                    rawFirst: false,
+                                    mlxActiveMb: mlx.active,
+                                    mlxCacheMb: mlx.cache,
+                                    mlxPeakMb: mlx.peak
                                 ))
                             }
                             // Don't bump segmentCount — there's no raw paste

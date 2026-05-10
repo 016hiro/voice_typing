@@ -134,6 +134,13 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let glossary: String?          // GlossaryBuilder.buildLLMGlossary output (nil if dictionary empty)
         let profileSnippet: String?    // per-app override snippet (nil if none)
         let rawFirst: Bool             // false = paste-after-refine; true = paste-then-refine flow
+        // v0.7.3 #B8a: process-wide MLX memory snapshot at refine end (MB).
+        // Optional so older builds' jsonl decode + cloud-only paths stay valid.
+        // Used to characterize cacheMemory growth over uptime before/after
+        // setting `cacheLimit`.
+        let mlxActiveMb: Int?
+        let mlxCacheMb: Int?
+        let mlxPeakMb: Int?
     }
 
     // MARK: - Lifecycle
