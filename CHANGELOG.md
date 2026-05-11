@@ -6,6 +6,22 @@
 
 _（下个版本的用户可见变更在此累积）_
 
+## v0.7.3 — 2026-05-11
+
+### Fixed
+- **App 跑 1-2 天后转录越用越慢**：体感上"用两三天就卡得不行"，dogfood 数据里证实了——ASR p50 在进程 uptime 0-6h 时 340 ms，48-54h 后 831 ms（2.5× 劣化），p90 也从 883 ms 翻到 1804 ms。根因不是权重被压（v0.7.2 已经修了），而是 mlx-swift 的 GPU buffer 复用池没设上限——默认按 Metal `recommendedMaxWorkingSetSize` 在 24 GB Mac 上能涨到 16 GB。2 天后进程 IOAccelerator 占用 15.6 GB / 物理足迹 16.1 GB / 13.6 GB 被 compressor 压走，每次推理触摸到被压的页都要付解压成本。修法：`main.swift` 早期设 `MLX.Memory.cacheLimit = 1 GB`，excess buffer 在下次释放时归还系统。修后 9.5h+ uptime 物理足迹 5.6 GB / swap 112 KB / p50 333 ms（和冷启动 baseline 持平）
+- **短按只说一个热词时被静音吞掉**：用户短按只说 "Qwen" / "VAD" / "Rust" 等 dictionary 里的词，ASR 转出原文后 HallucinationFilter 把它当作"模型背 prompt"误删。短词归一化后必然被长 context 包含，触发了 prompt-echo 检测的反方向 false-positive。修法去掉一边的 substring 判断，真正的"完整背 prompt"误打开式样仍能抓住。同时 debug capture 里新增 `filterReason` 字段，下次再出现类似问题不用反推根因
+- **Live 模式偶尔把一句话切成两段各 refine 一次**：VAD 静默判定阈值从 0.7 s 调到 1.5 s。短停顿不再算句末，inline refine 调用次数下降，平均段长涨 ~30%。25 s 的 force-split 上限仍兜底极端长句
+- **Refine 输出版本号 / 域名 / 文件后缀时用中文"。"**：refine prompt 加规则把 "com 点" / "V 一点二点三" / "config 点 toml" 这类位置的"点"明确改成 ASCII `.`（→ `.com` / `V1.2.3` / `config.toml`）。量词搭配（"三点了" / "锚定点"）保留中文形态
+
+### Added
+- **Settings → LLM 加 "Keep weights in memory" 开关**（仅在已下载本地 refiner 时显示）：开启后把 refiner 权重钉死在 GPU residency 集合里（2.5 GB），idle 后第一次 refine 不用等冷解压。代价是 2.5 GB unified memory 长期 reserved；16 GB Mac 上系统可能 clamp 到低于 2.5 GB，UI 有提示。Local refiner 还是 opt-in，开关默认 off
+- **Debug capture 落每次 refine 时的 MLX 内存快照** (`activeMb` / `cacheMb` / `peakMb`)：未来再出类似的长跑漂移可以直接看 `refines.jsonl` 而不用反推
+
+### Notes
+- 长跑性能现在依赖**两个**独立机制共同生效：v0.7.2 的权重 pin（防 idle 解压）和 v0.7.3 的 cacheLimit（防 uptime 漂移）。架构原因详见 [`docs/decisions/0003-bound-mlx-cache-pool.md`](docs/decisions/0003-bound-mlx-cache-pool.md)
+- 完整开发记录：[`docs/devlog/v0.7.3.md`](docs/devlog/v0.7.3.md)
+
 ## v0.7.2 — 2026-05-07
 
 ### Fixed
