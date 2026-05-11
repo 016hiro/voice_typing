@@ -114,6 +114,15 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(localRefinerEnabled, forKey: "localRefinerEnabled") }
     }
 
+    /// v0.7.3 #B5: when true, the local refiner pins its weights via
+    /// `WiredMemoryTicket` (~2.5 GB ceiling) to keep the macOS unified-memory
+    /// compressor from evicting them during idle. Mirrors the v0.7.1 #B7 ASR
+    /// pin. Independent of `localRefinerEnabled` only so the toggle's UI
+    /// state survives toggling local off→on without loss.
+    @Published var localRefinerPinned: Bool {
+        didSet { UserDefaults.standard.set(localRefinerPinned, forKey: "localRefinerPinned") }
+    }
+
     /// v0.7.0 #R9 redo bug-fix: the *currently selected* refiner has what it
     /// needs to refine. Pre-v0.7.0 the `willRefine` gate everywhere checked
     /// only `llmConfig.hasCredentials`, which silently bypassed refine for
@@ -243,6 +252,7 @@ final class AppState: ObservableObject {
         Log.devMode = dev
 
         self.localRefinerEnabled = ud.bool(forKey: "localRefinerEnabled")
+        self.localRefinerPinned = ud.bool(forKey: "localRefinerPinned")
 
         self.debugCaptureEnabled = ud.bool(forKey: "debugCaptureEnabled")
         // Default retention 7 days. `object(forKey:)` returns nil for never-set

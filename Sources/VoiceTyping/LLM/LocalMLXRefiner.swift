@@ -35,18 +35,70 @@ actor LocalMLXRefiner: LLMRefining {
     private var loadedContainer: ModelContainer?
     private var loadInFlight: Task<ModelContainer, Error>?
 
+    /// v0.7.3 #B5: when true, weights are pinned via `WiredMemoryTicket` to
+    /// stop the macOS unified-memory compressor from evicting them during
+    /// idle. Mirrors the v0.7.1 #B7 ASR pin pattern (see
+    /// `QwenASRRecognizer.weightsWiredTicket`). Lazy: flipping the flag does
+    /// NOT trigger a load — the next `ensureLoaded()` will pin after the
+    /// container materializes. Flipping off mid-life ends the ticket
+    /// immediately; pages get reclaimed lazily by the compressor as needed.
+    /// 2.5 GB ceiling covers Qwen3.5-4B 4-bit (~2.0 GB weights + KV/scratch
+    /// headroom).
+    private var pinningEnabled: Bool = false
+    private var weightsWiredTicket: WiredMemoryTicket?
+    private static let pinSize: Int = 2_500_000_000
+
     init(modelDirectory: URL = ModelStore.localRefinerDirectory) {
         self.modelDirectory = modelDirectory
     }
 
     /// v0.7.3 #B8a: process-wide MLX memory snapshot in MB. Shared between
     /// ASR (Qwen) and refiner — both feed the same MLX allocator pool, so
-    /// the values reflect total MLX footprint at the time of call.
+    /// the values reflect total MLX footprint at the time of call. Returns
+    /// nil only on platforms where MLX isn't initialized at all (cloud-only
+    /// builds), keeping callers branch-free in normal flow.
     /// Use case: log per-refine to characterize cacheMemory growth over a
     /// long-running process before/after #B8b sets a `cacheLimit`.
     nonisolated static func memSnapshotMb() -> (active: Int, cache: Int, peak: Int) {
         let snap = MLX.Memory.snapshot()
         return (snap.activeMemory / 1_000_000, snap.cacheMemory / 1_000_000, snap.peakMemory / 1_000_000)
+    }
+
+    /// v0.7.3 #B5: runtime toggle from Settings → LLM. Pin is lazy:
+    /// - on with no container yet → set flag, next load pins after weights
+    ///   land
+    /// - on with container already loaded → pin now
+    /// - off with active ticket → end the ticket
+    /// - off with no ticket → just clear the flag
+    func setPinned(_ enabled: Bool) async {
+        pinningEnabled = enabled
+        if enabled {
+            // Container loaded but not yet pinned → pin now.
+            if loadedContainer != nil, weightsWiredTicket == nil {
+                await pinIfNeeded()
+            }
+        } else {
+            if let ticket = weightsWiredTicket {
+                _ = await ticket.end()
+                weightsWiredTicket = nil
+                Log.llm.notice("LocalMLXRefiner: weights unpinned (ticket ended)")
+            }
+        }
+    }
+
+    private func pinIfNeeded() async {
+        guard pinningEnabled, weightsWiredTicket == nil else { return }
+        // Disambiguate: both MLX and MLXLMCommon export `WiredSumPolicy`.
+        // We want the MLX one to match the ASR pin in `QwenASRRecognizer`
+        // so both tickets share the same WiredMemoryManager pool.
+        let ticket = WiredMemoryTicket(
+            size: Self.pinSize,
+            policy: MLX.WiredSumPolicy(),
+            kind: .active
+        )
+        _ = await ticket.start()
+        weightsWiredTicket = ticket
+        Log.llm.notice("LocalMLXRefiner: weights pinned via WiredMemoryTicket (\(Self.pinSize / 1_000_000)MB ceiling)")
     }
 
     nonisolated func refine(_ text: String,
@@ -240,6 +292,10 @@ actor LocalMLXRefiner: LLMRefining {
         defer { loadInFlight = nil }
         let container = try await task.value
         loadedContainer = container
+        // v0.7.3 #B5: pin right after first successful load if user has the
+        // toggle on. Same ordering as ASR's #B7 (pin before any inference) so
+        // pages get faulted in already-wired.
+        await pinIfNeeded()
         return container
     }
 }

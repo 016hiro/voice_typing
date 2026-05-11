@@ -1249,6 +1249,32 @@ private struct LLMTab: View {
                 .foregroundStyle(.orange)
         }
 
+        // v0.7.3 #B5: pin toggle. Only meaningful once weights are downloaded.
+        if localIsDownloaded {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $state.localRefinerPinned) {
+                    Text("Keep weights in memory (pin)")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(LG.text)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+
+                Text("Holds ~2.5 GB wired so first refine after idle stays fast. Otherwise macOS may evict weights and the next refine takes 5–30 s.")
+                    .font(.caption)
+                    .foregroundStyle(LG.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if state.localRefinerPinned && ramTier == .mid {
+                    Label("On 16 GB Macs the system may clamp this below 2.5 GB; pinning works best on ≥24 GB.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+
         localStatusFooter
     }
 

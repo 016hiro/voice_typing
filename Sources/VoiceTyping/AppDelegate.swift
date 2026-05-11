@@ -76,6 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recognizerStateTask: Task<Void, Never>?
     private var pipelineTask: Task<Void, Never>?
     private var permissionTimer: Timer?
+    /// v0.7.3 #B5: drives `LocalMLXRefiner.setPinned` from the user's
+    /// Settings → LLM toggle. Set up once in `applicationDidFinishLaunching`.
+    private var stateCancellables: Set<AnyCancellable> = []
     private var infoResetTask: Task<Void, Never>?
     private var backendSwapTask: Task<Void, Never>?
     private var appActivationObserver: NSObjectProtocol?
@@ -242,6 +245,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let failure = LLMConfigStore.migrationFailure {
             showAPIKeyMigrationFailureAlert(reason: failure)
         }
+
+        // v0.7.3 #B5: pipe Settings → LLM "pin weights" toggle into the
+        // refiner actor. `setPinned` is lazy: turning on with no container
+        // loaded just sets the flag (next refine triggers the load + pin),
+        // turning off ends the active ticket if any. Driven via Combine so
+        // the UI Toggle is the single source of truth across the app.
+        // `removeDuplicates` keeps us from re-pinning on unrelated AppState
+        // edits.
+        state.$localRefinerPinned
+            .removeDuplicates()
+            .sink { [weak self] pinned in
+                guard let self else { return }
+                Task { [refiner = self.localRefinerInstance] in
+                    await refiner.setPinned(pinned)
+                }
+            }
+            .store(in: &stateCancellables)
     }
 
     private func shouldShowFirstLaunchOnboarding() -> Bool {
