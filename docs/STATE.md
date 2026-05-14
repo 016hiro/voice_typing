@@ -1,10 +1,12 @@
 # STATE
 
-_Last updated: 2026-05-11_
+_Last updated: 2026-05-15_
 
 ## Current Focus
 
-**v0.8.0 — Per-app hotwords**：主线 #B5 per-app 热词配置（schema + UI 待 `/think` 拍板）+ 副线 #S1 短句 refine skip heuristic（v0.7.3 #B1 telemetry 跑出 40% no-op，数据驱动优化短句 p50）。
+**v0.8.0 — Per-app hotwords + short-skip**：主线 #B5 per-app 热词配置（schema + UI 待 `/think` 拍板）+ 副线 #S1 短句 refine skip heuristic（variant C rule heuristic + Layer 1 substring hotword guard + Layer 2 phonetic hotword guard via NLTokenizer/CFStringTransform）。#S2 memoization cache 经离线 replay 验证 0% 命中率，已否决。v0.7.3 #B1 telemetry 跑出 ~50% no-op，#S1 数据驱动设计能吃掉约 15% 的 LLM wait time 而 precision 保 95.7%。
+
+**v0.8.1 — E2E refine quality eval**（已 skeleton，未启动）：#E1 公开 ASR-correction 数据集跑 refine-only 文本 CER（CI 友好）+ #E2 自有 captures 手标 gold 跑整条 pipeline CER。不评 ASR 单独 WER/CER（Qwen 官方已提供）。
 
 ## Current Version
 
@@ -18,7 +20,7 @@ _Last updated: 2026-05-11_
 
 ## Next Concrete Step
 
-`/think` 拍板 v0.8.0 #B5 schema（a/b/c：ContextProfile.dictionaryFilter 子集 / 独立 PerAppDictionaryStore / dictionaryMode enum）+ profile editor 多选 UI 设计。在此之前可以先做副线 #S1 短句 skip heuristic 的离线 replay 工具——`refines.jsonl` 已有 139+ 条带 `mlxCacheMb` 字段的数据可以跑 confusion matrix。
+副线 #S1 阶段 2 进 Swift 实施 ——`RefineSkipHeuristic` 整合 variant C rule heuristic + Layer 1 substring guard（复用 `GlossaryBuilder.matchedEntryIDs`）+ Layer 2 phonetic guard（`NLTokenizer` + `CFStringTransform` + Levenshtein），挂到 `LocalLiveSegmentSession.runSegment` 入口。主线 #B5 schema 仍待 `/think` 拍板，但 #S1 已不依赖它，可独立推进。
 
 ## Blockers / Open Questions
 

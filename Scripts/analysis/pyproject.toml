@@ -1,0 +1,13 @@
+[project]
+name = "voice-typing-analysis"
+version = "0.1.0"
+description = "Offline analysis scripts for VoiceTyping dogfood data — replays, perf, hotword phonetic prototypes."
+requires-python = ">=3.12"
+dependencies = [
+    # Chinese word segmentation for hotword phonetic guard prototype (v0.8.0 #S1).
+    # Pure-Python, ~5 MB. Swift implementation uses NLTokenizer instead.
+    "jieba>=0.42.1",
+    # Hanzi → toneless pinyin for phonetic-distance matching. Swift equivalent:
+    # CFStringTransform(..., kCFStringTransformMandarinLatin).
+    "pypinyin>=0.55.0",
+]
