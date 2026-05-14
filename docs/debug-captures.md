@@ -52,9 +52,18 @@
   "endSec": 4.10,
   "rawText": "今天我们来聊一下…",
   "filter": "kept",                     // 或 "hallucinationFiltered"
+  "filterReason": null,                 // v0.7.3+：被过滤时的具体原因，否则 null
   "transcribeMs": 412
 }
 ```
+
+`filterReason` 取值（v0.7.3+，`filter == "hallucinationFiltered"` 时才有）：
+
+- `"blacklist"` — Layer 1 静态黑名单（"谢谢观看" / "Thank you." 等训练集尾巴）
+- `"promptEchoChinesePrefix"` — Layer 2a 中文 prompt 前缀回显
+- `"promptEchoSubstring"` — Layer 2b prompt context substring 包含
+
+v0.7.3 #B6 修了 `promptEchoSubstring` 单热词被误杀的反向 false-positive，同步加这个字段方便下次回溯。
 
 ## injections.jsonl 字段
 
@@ -86,11 +95,16 @@
   "latencyMs": 745,                      // 整次 refine() await 的 wall-clock
   "glossary": "热词：Agent、Claude Code。",  // 投给模型的字典块（可能为 null）
   "profileSnippet": null,                // 命中的 ContextProfile 片段（无则 null）
-  "rawFirst": false                      // false = 等 refine 完再贴；true = 先贴 raw 后台 refine 再 Cmd+Z 替换
+  "rawFirst": false,                     // false = 等 refine 完再贴；true = 先贴 raw 后台 refine 再 Cmd+Z 替换（v0.7.0 起永远 false：raw-first 模式被流式 refine 替代）
+  "mlxActiveMb": 1583,                   // v0.7.3+：refine 跑完时 MLX `.active` 区（权重 + 当前 working set），Int? — 旧 jsonl / cloud refine 路径为 null
+  "mlxCacheMb": 1024,                    // v0.7.3+：MLX buffer 复用池——长跑下应该被 cacheLimit clamp 在 ~1 GB；持续上涨说明 clamp 没生效
+  "mlxPeakMb": 2891                      // v0.7.3+：进程生命周期内 MLX peak，水位看 refiner pin 是否拉高
 }
 ```
 
 **敏感性提醒**：`input` / `output` / `glossary` / `profileSnippet` 是用户实际说的话和实际配置——只在你自己分析时跑，发出去之前确认下里面没有要保密的内容。API key 不在这里（永远不写盘）。
+
+> **历史数据缺口（v0.7.0..v0.7.2）**：`LocalLiveSegmentSession` 路径（live 模式 × local refiner）在 v0.7.0 引入时漏接 `appendRefine` 闭包，整段 inline refine 没写 `refines.jsonl`——5 天 dogfood 全丢。v0.7.3 #B1 修复。**只在 v0.7.3+ build 收上来的 capture 才完整**，老数据 cloud refine 路径完整、local live 路径全空。同时 v0.7.3 #B8a 补的 MLX 内存三字段（`mlxActiveMb` / `mlxCacheMb` / `mlxPeakMb`）是 [ADR-0003](../decisions/0003-bound-mlx-cache-pool.md) 长跑漂移分析的主要数据源。
 
 ## 常用 `jq` 查询
 

@@ -39,22 +39,26 @@ E2E 前置：`make setup-metal` 完成 + 至少一次 `make run` 触发 Qwen 模
   ```
 - **dev 通道**：默认关。Settings → Advanced → Verbose pipeline diagnostics 打开 → `Log.dev.*` 调用点开始打印
 - **TCC 重授权**：`make reset-perms` → `tccutil reset Microphone/Accessibility com.voicetyping.app`，下次启动重弹授权
-- **Debug Data Capture**：Settings → Advanced 开启 → 每次录音 audio + 段级 transcript + inject result 落盘到 `~/Library/Application Support/VoiceTyping/debug-captures/<session>/`，schema 见 `docs/debug-captures.md`
+- **Debug Data Capture**：Settings → Advanced 开启 → 每次录音 audio + 段级 transcript + inject result（v0.6.3+ 含 LLM refine I/O + 延迟，v0.7.3+ 含 MLX 内存快照）落盘到 `~/Library/Application Support/VoiceTyping/debug-captures/<session>/`，schema 见 `docs/debug-captures.md`
 - **模型缓存**：`~/Library/Application Support/VoiceTyping/models/<backend>/`；删了重启会重新下载
 - **prepare 计时**：v0.5.1 起 Qwen 启动会打 `Qwen prepare timing: backend=… cached=… offline=… total=…ms load=…ms warmup=…ms stages=[...]`
+- **挂起线程栈**（v0.7.2+）：live-mode 转写胶囊卡 5 s 以上时 `TranscribeWatchdog` 自动跑 `sample(1)` 把线程栈落到 `~/Library/Application Support/VoiceTyping/hang-stacks/<timestamp>_<callsite>.txt`。MLX `relu` 锁卡 GPU 事件的 spike 全过程见 `docs/spike/v0.7.1-vad-hang.md`
+- **MLX 内存实时观察**（v0.7.3+）：`Log.llm` 每次 refine 跑完会打 `mlxActive=… mlxCache=… mlxPeak=…`。长跑下若 `mlxCache` 持续上涨说明 `MLX.Memory.cacheLimit` 没生效（应稳定在 ~1 GB），决策见 [`decisions/0003-bound-mlx-cache-pool.md`](decisions/0003-bound-mlx-cache-pool.md)
 
 ## 发布
 
-参考 `docs/devlog/v0.5.1.md` 流程：
+**v0.6.0 起走 DMG + Sparkle 流程，详见 [`docs/release-process.md`](release-process.md)**。要点速览：
 
-1. 完成所有 `docs/todo/vX.Y.Z.md` 必做项 → all green: `make test-e2e`
-2. 写 `docs/devlog/vX.Y.Z.md`（参照已有版本结构：背景 + 决策 + 落地 + 验证 + 已知遗留）
-3. 更新 `docs/roadmap.md` 当前 ship 行 + 最近三里程碑列表
-4. 更新 `docs/todo/backlog.md`（划掉已完成项 / 把决策移到对应版本 doc）
-5. 更新 `CHANGELOG.md` 用户可见变更
-6. bump `Resources/Info.plist` 的 `CFBundleShortVersionString` + `CFBundleVersion`
-7. commit：`vX.Y.Z 主题：副标题`
-8. `git tag vX.Y.Z`
-9. push（CI 跑 build + unit test smoke）
+1. 完成所有 `docs/todo/vX.Y.Z.md` 必做项 → `make test-e2e` 全绿
+2. 写 `docs/devlog/vX.Y.Z.md`（背景 + 决策 + 落地 + 验证 + 已知遗留）
+3. 更新 `CHANGELOG.md` 用户可见变更（这是 release notes 的源）
+4. 更新 `docs/todo/backlog.md`（划掉完成项 / 把决策迁到对应版本 doc）
+5. bump `Resources/Info.plist`：`CFBundleShortVersionString` + `CFBundleVersion`
+6. `make release` 打 DMG（hard-check `mlx.metallib` 嵌入，签名 + EdDSA 签 sparkle update）
+7. commit + `git tag vX.Y.Z` + push
+8. `gh release create vX.Y.Z build/VoiceTyping-X.Y.Z.dmg --notes-file docs/devlog/vX.Y.Z.md`
+9. 把 `build/gh-pages/appcast.xml` push 上去触发已装用户 Sparkle 自动检测
 
-发版无 GitHub Release / homebrew 流程，开发者自行 `make install`。
+> ~~v0.5.x 以前的"`make install` 开发者自取"流程已废弃~~。具体命令、Sparkle EdDSA 签名 key 管理、TCC 跨升级保留验证等见上面 `release-process.md`。
+>
+> 也可以走 `close-iteration` skill 自动化前 6 步（写 devlog + 更 CHANGELOG + bump Info.plist + commit）。
