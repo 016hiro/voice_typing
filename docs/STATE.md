@@ -16,11 +16,11 @@ _Last updated: 2026-05-15_
 
 ## In-flight Changes
 
-无代码 in-flight。v0.7.3 = pin refiner toggle + MLX cacheLimit + telemetry，完整解决"用 2-3 天后转录卡顿"的 long-uptime drift；详见 `decisions/0003-bound-mlx-cache-pool.md`。
+副线 #S1 Swift 实施已落地（未发版）：`RefineSkipHeuristic` + `PhoneticMatcher` 两个新模块挂入 `AppDelegate+Live.swift` 的 local-per-segment 分支；`RefineRecord` 加 `gate` 字段同时区分 skipped / rule / hotword_substring / hotword_phonetic 四态；`Scripts/analysis/skip_gate_report.py` 读 dogfood 数据回答 skip 占比 + 节省延迟。223 test 全过。v0.7.3 cacheLimit 路线 `decisions/0003-bound-mlx-cache-pool.md`。
 
 ## Next Concrete Step
 
-副线 #S1 阶段 2 进 Swift 实施 ——`RefineSkipHeuristic` 整合 variant C rule heuristic + Layer 1 substring guard（复用 `GlossaryBuilder.matchedEntryIDs`）+ Layer 2 phonetic guard（`NLTokenizer` + `CFStringTransform` + Levenshtein），挂到 `LocalLiveSegmentSession.runSegment` 入口。主线 #B5 schema 仍待 `/think` 拍板，但 #S1 已不依赖它，可独立推进。
+#S1 dogfood ≥1 周后跑 `skip_gate_report.py`，看实际 skip 占比是否接近 prototype 预测的 ~16%、phonetic guard FP 率是否在可接受范围。主线 #B5 per-app hotwords schema 仍待 `/think` 拍板，独立于 #S1 推进。
 
 ## Blockers / Open Questions
 

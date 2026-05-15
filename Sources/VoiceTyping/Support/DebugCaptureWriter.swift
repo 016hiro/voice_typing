@@ -141,6 +141,17 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let mlxActiveMb: Int?
         let mlxCacheMb: Int?
         let mlxPeakMb: Int?
+        // v0.8.0 #S1: pre-LLM skip-gate label.
+        //   "skipped"           → bypassed refine entirely (latencyMs=0,
+        //                          output==input)
+        //   "rule"              → Variant C rule fired → refine ran
+        //   "hotword_substring" → Layer 1 substring guard fired → refine ran
+        //   "hotword_phonetic"  → Layer 2 phonetic guard fired → refine ran
+        // nil for pre-v0.8.0 records or paths that don't run the heuristic
+        // (one-shot cloud refine, batch session-end refine). Replay tools
+        // read this to compute skip_rate, hotword_guard_block_rate, and
+        // estimated saved latency.
+        let gate: String?
     }
 
     // MARK: - Lifecycle

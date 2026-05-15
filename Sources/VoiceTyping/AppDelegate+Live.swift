@@ -197,62 +197,101 @@ extension AppDelegate {
                     var actualInjected = delta
                     if currentBundleID == frontmostBundleID {
                         if let liveSession = localLiveSession {
-                            // Local per-segment streaming refine. We build a
-                            // wrapper stream that yields the separator first
-                            // (so the model only sees the raw segment, not a
-                            // leading space its history wouldn't match), then
-                            // forwards refined chunks. injectIncremental
-                            // pastes at flush boundaries (#R5).
-                            let refineStarted = Date()
-                            let acc = LiveInjectedChunkAccumulator()
-                            let stream = AsyncThrowingStream<String, Error> { continuation in
-                                let task = Task {
-                                    if !separator.isEmpty {
-                                        continuation.yield(separator)
-                                        acc.append(separator)
-                                    }
-                                    do {
-                                        for try await chunk in liveSession.refineSegmentStream(segment) {
-                                            continuation.yield(chunk)
-                                            acc.append(chunk)
-                                        }
-                                        continuation.finish()
-                                    } catch {
-                                        continuation.finish(throwing: error)
-                                    }
-                                }
-                                continuation.onTermination = { _ in task.cancel() }
-                            }
-                            _ = await injector.injectIncremental(stream: stream)
-                            actualInjected = acc.snapshot
-                            // v0.7.3 #B1: per-segment refine telemetry. Until
-                            // now this path wrote nothing to refines.jsonl —
-                            // the AppDelegate session-end refine block
-                            // (`!liveResult.refinedInline`) skips local-live
-                            // entirely, so cloud↔local A/B and cold-path
-                            // dogfood data was lost for the path most users
-                            // run. Wall-clock latency includes the inject
-                            // paste (~5-50 ms); ground-truth `infer_ms` still
-                            // lives in oslog via LocalLiveSegmentSession.
-                            // Skip on empty output (refine no-op / failure).
-                            let refinedOutput = acc.snapshot
-                            if !refinedOutput.isEmpty {
-                                let mlx = LocalMLXRefiner.memSnapshotMb()
-                                Log.llm.notice("MLX mem after refine: active=\(mlx.active, privacy: .public)MB cache=\(mlx.cache, privacy: .public)MB peak=\(mlx.peak, privacy: .public)MB backend=local")
+                            // v0.8.0 #S1: pre-LLM skip gate. Variant C rule
+                            // heuristic + two-layer hotword guard decides
+                            // whether this segment can bypass the ~1.7 s
+                            // refine round-trip entirely. ~50% of inline
+                            // refines were no-ops in v0.7.3 dogfood; this
+                            // gate aims to claim that latency back without
+                            // damaging hotword mishearings the user never
+                            // enumerated. Telemetry writes the gate label
+                            // into refines.jsonl for both branches so the
+                            // replay tools can compute skip rate and
+                            // estimated saved latency from session data.
+                            let decision = RefineSkipHeuristic.evaluate(
+                                input: segment, entries: dictEntries)
+                            if decision.shouldSkipRefine {
+                                let injectStarted = Date()
+                                let raw = separator + segment
+                                await injector.inject(raw)
+                                actualInjected = raw
                                 injectWriter?.appendRefine(.init(
-                                    timestamp: refineStarted,
+                                    timestamp: injectStarted,
                                     input: segment,
-                                    output: refinedOutput,
+                                    output: segment,
                                     mode: refineMode.rawValue,
                                     backend: "local",
-                                    latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
+                                    latencyMs: 0,
                                     glossary: segmentGlossary,
                                     profileSnippet: profileSnippet,
                                     rawFirst: false,
-                                    mlxActiveMb: mlx.active,
-                                    mlxCacheMb: mlx.cache,
-                                    mlxPeakMb: mlx.peak
+                                    mlxActiveMb: nil,
+                                    mlxCacheMb: nil,
+                                    mlxPeakMb: nil,
+                                    gate: decision.gate.rawValue
                                 ))
+                            } else {
+                                if let hit = decision.phoneticHit {
+                                    Log.llm.info("RefineSkip: phonetic-guard blocked term=\(hit.term, privacy: .public) variant=\(hit.variant, privacy: .public) source=\(hit.source, privacy: .public) d=\(hit.distance, privacy: .public)")
+                                }
+                                // Local per-segment streaming refine. We build a
+                                // wrapper stream that yields the separator first
+                                // (so the model only sees the raw segment, not a
+                                // leading space its history wouldn't match), then
+                                // forwards refined chunks. injectIncremental
+                                // pastes at flush boundaries (#R5).
+                                let refineStarted = Date()
+                                let acc = LiveInjectedChunkAccumulator()
+                                let stream = AsyncThrowingStream<String, Error> { continuation in
+                                    let task = Task {
+                                        if !separator.isEmpty {
+                                            continuation.yield(separator)
+                                            acc.append(separator)
+                                        }
+                                        do {
+                                            for try await chunk in liveSession.refineSegmentStream(segment) {
+                                                continuation.yield(chunk)
+                                                acc.append(chunk)
+                                            }
+                                            continuation.finish()
+                                        } catch {
+                                            continuation.finish(throwing: error)
+                                        }
+                                    }
+                                    continuation.onTermination = { _ in task.cancel() }
+                                }
+                                _ = await injector.injectIncremental(stream: stream)
+                                actualInjected = acc.snapshot
+                                // v0.7.3 #B1: per-segment refine telemetry. Until
+                                // now this path wrote nothing to refines.jsonl —
+                                // the AppDelegate session-end refine block
+                                // (`!liveResult.refinedInline`) skips local-live
+                                // entirely, so cloud↔local A/B and cold-path
+                                // dogfood data was lost for the path most users
+                                // run. Wall-clock latency includes the inject
+                                // paste (~5-50 ms); ground-truth `infer_ms` still
+                                // lives in oslog via LocalLiveSegmentSession.
+                                // Skip on empty output (refine no-op / failure).
+                                let refinedOutput = acc.snapshot
+                                if !refinedOutput.isEmpty {
+                                    let mlx = LocalMLXRefiner.memSnapshotMb()
+                                    Log.llm.notice("MLX mem after refine: active=\(mlx.active, privacy: .public)MB cache=\(mlx.cache, privacy: .public)MB peak=\(mlx.peak, privacy: .public)MB backend=local gate=\(decision.gate.rawValue, privacy: .public)")
+                                    injectWriter?.appendRefine(.init(
+                                        timestamp: refineStarted,
+                                        input: segment,
+                                        output: refinedOutput,
+                                        mode: refineMode.rawValue,
+                                        backend: "local",
+                                        latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
+                                        glossary: segmentGlossary,
+                                        profileSnippet: profileSnippet,
+                                        rawFirst: false,
+                                        mlxActiveMb: mlx.active,
+                                        mlxCacheMb: mlx.cache,
+                                        mlxPeakMb: mlx.peak,
+                                        gate: decision.gate.rawValue
+                                    ))
+                                }
                             }
                             // Don't bump segmentCount — there's no raw paste
                             // to undo at session end on this path.

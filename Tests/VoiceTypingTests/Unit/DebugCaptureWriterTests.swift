@@ -170,7 +170,8 @@ final class DebugCaptureWriterTests: XCTestCase {
             rawFirst: false,
             mlxActiveMb: nil,
             mlxCacheMb: nil,
-            mlxPeakMb: nil
+            mlxPeakMb: nil,
+            gate: nil
         )
         let r2 = DebugCaptureWriter.RefineRecord(
             timestamp: Date(),
@@ -184,7 +185,8 @@ final class DebugCaptureWriterTests: XCTestCase {
             rawFirst: true,
             mlxActiveMb: 2400,
             mlxCacheMb: 320,
-            mlxPeakMb: 2700
+            mlxPeakMb: 2700,
+            gate: "rule"
         )
         writer.appendRefine(r1)
         writer.appendRefine(r2)
@@ -241,7 +243,7 @@ final class DebugCaptureWriterTests: XCTestCase {
         writer.appendRefine(.init(timestamp: Date(), input: "late", output: "late",
                                    mode: "light", backend: "cloud",
                                    latencyMs: 100, glossary: nil, profileSnippet: nil, rawFirst: false,
-                                   mlxActiveMb: nil, mlxCacheMb: nil, mlxPeakMb: nil))
+                                   mlxActiveMb: nil, mlxCacheMb: nil, mlxPeakMb: nil, gate: nil))
         drain(writer)
 
         let jsonlURL = writer.folder.appendingPathComponent("refines.jsonl")

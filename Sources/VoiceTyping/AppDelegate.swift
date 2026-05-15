@@ -805,7 +805,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         rawFirst: false,
                         mlxActiveMb: mlx.active,
                         mlxCacheMb: mlx.cache,
-                        mlxPeakMb: mlx.peak
+                        mlxPeakMb: mlx.peak,
+                        gate: nil
                     ))
 
                     // Replace only if refine actually changed something AND
@@ -1041,7 +1042,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 rawFirst: false,
                 mlxActiveMb: mlx.active,
                 mlxCacheMb: mlx.cache,
-                mlxPeakMb: mlx.peak
+                mlxPeakMb: mlx.peak,
+                gate: nil
             ))
             finalText = refined
 
@@ -1174,7 +1176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rawFirst: false,
             mlxActiveMb: mlx.active,
             mlxCacheMb: mlx.cache,
-            mlxPeakMb: mlx.peak
+            mlxPeakMb: mlx.peak,
+            gate: nil
         ))
 
         let llmHits = GlossaryBuilder.matchedEntryIDs(in: result.accumulated, entries: dictEntries)
