@@ -16,7 +16,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .models:     return "Models"
         case .llm:        return "LLM"
         case .dictionary: return "Dictionary"
-        case .profiles:   return "Profiles"
+        case .profiles:   return "App hotwords"
         case .advanced:   return "Advanced"
         }
     }
@@ -26,7 +26,7 @@ enum SettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .models:     return "waveform"
         case .llm:        return "sparkles"
         case .dictionary: return "character.book.closed"
-        case .profiles:   return "text.bubble"
+        case .profiles:   return "app.badge.checkmark"
         case .advanced:   return "slider.horizontal.3"
         }
     }
@@ -1684,10 +1684,20 @@ private struct ProfilesTab: View {
     @State private var editingID: UUID?
     @State private var draftName: String = ""
     @State private var draftBundleID: String = ""
-    @State private var draftSnippet: String = ""
     @State private var draftEnabled: Bool = true
+    @State private var draftIncludeGlobal: Bool = true
+    @State private var draftEntries: [DictionaryEntry] = []
     @State private var pendingDeleteIDs: Set<UUID> = []
     @State private var selection: Set<UUID> = []
+
+    // Nested per-app hotword entry editor (term / hints / note), layered over
+    // the profile editor sheet. Mutates `draftEntries` in memory; nothing
+    // persists until the profile itself is saved via commitEdit().
+    @State private var showingEntryEditor = false
+    @State private var entryEditingID: UUID?
+    @State private var entryDraftTerm: String = ""
+    @State private var entryDraftHints: String = ""
+    @State private var entryDraftNote: String = ""
 
     private var profiles: [ContextProfile] { state.profiles.profiles }
 
@@ -1696,10 +1706,23 @@ private struct ProfilesTab: View {
         return profiles.first { $0.id == id }
     }
 
+    /// Renders the "Hotwords" column cell. `global + N` = uses global plus N
+    /// private; `N only` = global off, N private; `global` = global only,
+    /// no private; `none` = global off, no private.
+    private func hotwordSummary(for profile: ContextProfile) -> String {
+        let n = profile.entries.count
+        switch (profile.includeGlobal, n) {
+        case (true, 0):  return "global"
+        case (true, _):  return "global + \(n)"
+        case (false, 0): return "none"
+        case (false, _): return "\(n) only"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 14) {
-            SectionCard(title: "Per-App Context Profiles") {
-                Text("Pick an app and add a system prompt snippet. When that app is frontmost at dictation time, the snippet is appended to the refiner's base prompt — before your vocabulary glossary — so the LLM adapts its style (casual for chat, terse for editors, etc). The refiner must be on; profiles never force it back on.")
+            SectionCard(title: "Per-App Hotwords") {
+                Text("Give an app its own hotwords. Each app can use the global Dictionary, add its own private hotwords, or both. Turn off \"use global\" for an app where global terms would be noise (e.g. coding hotwords in a chat app).")
                     .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(LG.textDim)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1718,12 +1741,12 @@ private struct ProfilesTab: View {
                     }
                     .width(min: 140, ideal: 180)
 
-                    TableColumn("Snippet") { profile in
-                        Text(profile.systemPromptSnippet)
+                    TableColumn("Hotwords") { profile in
+                        Text(hotwordSummary(for: profile))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    .width(min: 180, ideal: 280)
+                    .width(min: 120, ideal: 180)
 
                     TableColumn("Enabled") { profile in
                         Toggle("", isOn: Binding(
@@ -1800,6 +1823,10 @@ private struct ProfilesTab: View {
         .sheet(isPresented: $showingEditor) {
             editorSheet
                 .pasteboardShortcutsFix()
+                .sheet(isPresented: $showingEntryEditor) {
+                    entryEditorSheet
+                        .pasteboardShortcutsFix()
+                }
         }
         .alert(deleteAlertTitle,
                isPresented: .init(
@@ -1843,11 +1870,57 @@ private struct ProfilesTab: View {
                 Spacer()
             }
 
-            LabeledField(title: "System prompt snippet") {
-                TextEditor(text: $draftSnippet)
-                    .font(.system(size: 13))
-                    .frame(minHeight: 120, maxHeight: 220)
-                    .padding(4)
+            Toggle(isOn: $draftIncludeGlobal) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Also use global hotwords")
+                    Text("Apply your global Dictionary in this app on top of the private hotwords below.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            LabeledField(title: "App-specific hotwords") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            if draftEntries.isEmpty {
+                                Text("No private hotwords for this app yet.")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                ForEach(draftEntries) { entry in
+                                    HStack(spacing: 8) {
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(entry.term)
+                                                .font(.system(size: 12.5, weight: .medium))
+                                            if !entry.pronunciationHints.isEmpty {
+                                                Text(entry.pronunciationHints.joined(separator: " / "))
+                                                    .font(.system(size: 11))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        Spacer()
+                                        Button { beginEntryEdit(entry) } label: {
+                                            Image(systemName: "pencil")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        Button { deleteEntry(entry) } label: {
+                                            Image(systemName: "trash")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .foregroundStyle(.secondary)
+                                    }
+                                    .padding(.vertical, 4)
+                                    .padding(.horizontal, 8)
+                                    Divider()
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 140)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(Color(white: 0, opacity: 0.06))
@@ -1856,6 +1929,11 @@ private struct ProfilesTab: View {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
                     )
+
+                    Button { beginEntryAdd() } label: {
+                        Label("Add hotword", systemImage: "plus")
+                    }
+                }
             }
 
             LabeledField(title: "Display name") {
@@ -1865,7 +1943,7 @@ private struct ProfilesTab: View {
 
             Toggle("Enabled", isOn: $draftEnabled)
 
-            Text("Appended to the refiner's base system prompt. Keep it short and imperative — e.g. \"Prefer casual tone; allow contractions and informal phrasing.\"")
+            Text("Effective hotwords here = \(draftIncludeGlobal ? "global Dictionary + " : "")\(draftEntries.count) private. Turn off \"use global\" and add nothing for clean dictation in this app.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1880,14 +1958,51 @@ private struct ProfilesTab: View {
                     .keyboardShortcut(.cancelAction)
                 Button(editingID == nil ? "Add" : "Save") { commitEdit() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(
-                        draftBundleID.trimmingCharacters(in: .whitespaces).isEmpty ||
-                        draftSnippet.trimmingCharacters(in: .whitespaces).isEmpty
-                    )
+                    .disabled(draftBundleID.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(20)
         .frame(width: 520)
+    }
+
+    // MARK: Per-app entry editor (nested sheet)
+
+    private var entryEditorSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(entryEditingID == nil ? "Add App Hotword" : "Edit App Hotword")
+                .font(.headline)
+
+            LabeledField(title: "Term") {
+                TextField("e.g. 张三, ProjectFalcon", text: $entryDraftTerm)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            LabeledField(title: "Pronunciation hints (comma-separated)") {
+                TextField("zhang san, 张散", text: $entryDraftHints)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            LabeledField(title: "Note (optional)") {
+                TextField("your own reminder, not shown to the model", text: $entryDraftNote)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Text("Same shape as the global Dictionary, but scoped to this app only. The term is the canonical spelling; hints bias ASR and help the LLM map variants back.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { showingEntryEditor = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(entryEditingID == nil ? "Add" : "Save") { commitEntryEdit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(entryDraftTerm.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
     }
 
     // MARK: Actions
@@ -1901,8 +2016,9 @@ private struct ProfilesTab: View {
     private func beginEdit(_ profile: ContextProfile) {
         draftName = profile.name
         draftBundleID = profile.bundleID
-        draftSnippet = profile.systemPromptSnippet
         draftEnabled = profile.enabled
+        draftIncludeGlobal = profile.includeGlobal
+        draftEntries = profile.entries
         editingID = profile.id
         showingEditor = true
     }
@@ -1925,7 +2041,8 @@ private struct ProfilesTab: View {
                 ?? url.deletingPathExtension().lastPathComponent
         draftName = name
         draftBundleID = bid
-        draftSnippet = ""
+        draftIncludeGlobal = true
+        draftEntries = []
         draftEnabled = true
         editingID = nil
         showingEditor = true
@@ -1958,20 +2075,71 @@ private struct ProfilesTab: View {
     private func commitEdit() {
         let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
         let bid = draftBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let snippet = draftSnippet.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !bid.isEmpty, !snippet.isEmpty else { return }
+        guard !bid.isEmpty else { return }
 
         let existing = editingID.flatMap { id in profiles.first(where: { $0.id == id }) }
         let profile = ContextProfile(
             id: editingID ?? UUID(),
             name: name.isEmpty ? bid : name,
             bundleID: bid,
-            systemPromptSnippet: snippet,
+            entries: draftEntries,
+            includeGlobal: draftIncludeGlobal,
             enabled: draftEnabled,
             createdAt: existing?.createdAt ?? Date()
         )
         _ = state.upsertProfile(profile)
         showingEditor = false
+    }
+
+    // MARK: Per-app entry actions (mutate in-memory draftEntries only)
+
+    private func beginEntryAdd() {
+        entryDraftTerm = ""
+        entryDraftHints = ""
+        entryDraftNote = ""
+        entryEditingID = nil
+        showingEntryEditor = true
+    }
+
+    private func beginEntryEdit(_ entry: DictionaryEntry) {
+        entryDraftTerm = entry.term
+        entryDraftHints = entry.pronunciationHints.joined(separator: ", ")
+        entryDraftNote = entry.note ?? ""
+        entryEditingID = entry.id
+        showingEntryEditor = true
+    }
+
+    private func deleteEntry(_ entry: DictionaryEntry) {
+        draftEntries.removeAll { $0.id == entry.id }
+    }
+
+    private func commitEntryEdit() {
+        let term = entryDraftTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return }
+        let hints = entryDraftHints
+            .split(whereSeparator: { $0 == "," || $0 == "，" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let note = entryDraftNote.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let id = entryEditingID, let idx = draftEntries.firstIndex(where: { $0.id == id }) {
+            let existing = draftEntries[idx]
+            draftEntries[idx] = DictionaryEntry(
+                id: existing.id,
+                term: term,
+                pronunciationHints: hints,
+                note: note.isEmpty ? nil : note,
+                createdAt: existing.createdAt,
+                lastMatchedAt: existing.lastMatchedAt
+            )
+        } else {
+            draftEntries.append(DictionaryEntry(
+                term: term,
+                pronunciationHints: hints,
+                note: note.isEmpty ? nil : note
+            ))
+        }
+        showingEntryEditor = false
     }
 
     // MARK: Import / Export

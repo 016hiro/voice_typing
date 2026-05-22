@@ -55,7 +55,7 @@ public enum RefineMode: String, Codable, CaseIterable, Sendable, Identifiable {
     4) Add punctuation at clause boundaries where missing.
 
     You MUST NOT:
-    - rewrite, paraphrase, translate, or summarize
+    - paraphrase, restructure, translate, or summarize
     - change the user's tone, style, or sentence order
     - add content that wasn't spoken
     - translate English words into Chinese in mixed-language input — keep "Python" / "Kubernetes" / "API" / "JSON" as English, never render as "派森" / "应用程序接口" / "杰森"

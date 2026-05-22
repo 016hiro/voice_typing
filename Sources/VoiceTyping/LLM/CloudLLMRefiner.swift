@@ -28,8 +28,7 @@ final class CloudLLMRefiner: LLMRefining {
     func refine(_ text: String,
                 language: Language,
                 mode: RefineMode,
-                glossary: String?,
-                profileSnippet: String?) async -> String {
+                glossary: String?) async -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
         guard mode.systemPrompt != nil else { return text }    // .off
@@ -41,8 +40,7 @@ final class CloudLLMRefiner: LLMRefining {
             for try await chunk in refineStream(text,
                                                 language: language,
                                                 mode: mode,
-                                                glossary: glossary,
-                                                profileSnippet: profileSnippet) {
+                                                glossary: glossary) {
                 accumulated += chunk
             }
         } catch {
@@ -65,8 +63,7 @@ final class CloudLLMRefiner: LLMRefining {
     func refineStream(_ text: String,
                       language: Language,
                       mode: RefineMode,
-                      glossary: String?,
-                      profileSnippet: String?) -> AsyncThrowingStream<String, Error> {
+                      glossary: String?) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [self] in
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -76,7 +73,6 @@ final class CloudLLMRefiner: LLMRefining {
 
                 let finalSystem = LLMRefiningHelpers.compose(
                     systemPrompt: systemPrompt,
-                    profileSnippet: profileSnippet,
                     glossary: glossary
                 )
                 do {

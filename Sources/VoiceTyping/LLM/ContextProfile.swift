@@ -1,16 +1,25 @@
 import Foundation
 
-/// A per-application LLM refiner override. When the frontmost app at
-/// `stopRecording` time matches `bundleID`, `systemPromptSnippet` is appended to
-/// the mode's system prompt so the model can adapt its output style to the app
-/// (casual for chat apps, code-flavored for editors, etc.).
+/// A per-application hotword scope. When the frontmost app at
+/// `stopRecording` time matches `bundleID`, the effective hotword set for that
+/// recording is:
 ///
-/// Matching is exact on `bundleID`. Fancier patterns are out of scope for v0.3.1.
+///   effective = (includeGlobal ? global : []) + entries
+///
+/// where `global` is the shared `CustomDictionary` and `entries` are this
+/// app's private hotwords. Apps with no profile resolve to `global` only
+/// (the defaults below reproduce that: `includeGlobal == true`, empty
+/// `entries`).
+///
+/// See `docs/decisions/0005-per-app-independent-hotwords.md` for the model
+/// (global shared baseline + per-app private additions) and why it superseded
+/// the v0.8.0 whitelist (ADR-0004).
 public struct ContextProfile: Codable, Sendable, Identifiable, Equatable {
     public var id: UUID
     public var name: String
     public var bundleID: String
-    public var systemPromptSnippet: String
+    public var entries: [DictionaryEntry]
+    public var includeGlobal: Bool
     public var enabled: Bool
     public var createdAt: Date
 
@@ -18,27 +27,57 @@ public struct ContextProfile: Codable, Sendable, Identifiable, Equatable {
         id: UUID = UUID(),
         name: String,
         bundleID: String,
-        systemPromptSnippet: String,
+        entries: [DictionaryEntry] = [],
+        includeGlobal: Bool = true,
         enabled: Bool = true,
         createdAt: Date = Date()
     ) {
         self.id = id
         self.name = name
         self.bundleID = bundleID
-        self.systemPromptSnippet = systemPromptSnippet
+        self.entries = entries
+        self.includeGlobal = includeGlobal
         self.enabled = enabled
         self.createdAt = createdAt
     }
 
+    /// Codable with backward compatibility for pre-release profiles.json:
+    /// - v0.7.x `systemPromptSnippet` and pre-release v0.8.0 `dictionaryFilter`
+    ///   are simply absent from CodingKeys → ignored on decode.
+    /// - `entries` / `includeGlobal` are `decodeIfPresent` so older JSON
+    ///   without them defaults to "no private entries, use global" — the
+    ///   same as an unconfigured app.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, bundleID, entries, includeGlobal, enabled, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.bundleID = try c.decode(String.self, forKey: .bundleID)
+        self.entries = try c.decodeIfPresent([DictionaryEntry].self, forKey: .entries) ?? []
+        self.includeGlobal = try c.decodeIfPresent(Bool.self, forKey: .includeGlobal) ?? true
+        self.enabled = try c.decode(Bool.self, forKey: .enabled)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+    }
+
     var hasContent: Bool {
-        !bundleID.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !systemPromptSnippet.trimmingCharacters(in: .whitespaces).isEmpty
+        !bundleID.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     /// Case-insensitive dedup key: bundle ID is the natural unique key,
     /// since it's what we match on.
     var dedupKey: String {
         bundleID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// Resolve the effective hotword set for this app. Centralized here so
+    /// every pipeline call site that needs hotwords routes through one helper —
+    /// ASR bias, refine glossary, and the #S1 skip-gate guard must all see the
+    /// same list or hotword scope desyncs across consumers.
+    public func effectiveEntries(global: [DictionaryEntry]) -> [DictionaryEntry] {
+        (includeGlobal ? global : []) + entries
     }
 }
 
@@ -96,7 +135,6 @@ final class ContextProfileStore {
         var p = profile
         p.name = p.name.trimmingCharacters(in: .whitespacesAndNewlines)
         p.bundleID = p.bundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        p.systemPromptSnippet = p.systemPromptSnippet.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard p.hasContent else { return false }
 

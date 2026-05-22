@@ -160,7 +160,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dictEntries: [DictionaryEntry]
         let asrContext: String?
         let frontmostBundleID: String?
-        let profileSnippet: String?
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -564,17 +563,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // can pass an observer that funnels per-segment events into it.
             // Snapshot is the Fn↓ state — survives later state edits.
             let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            let captureProfile = state.profiles.lookup(bundleID: bid)
+            let captureEntries = captureProfile?.effectiveEntries(global: state.dictionary.entries)
+                ?? state.dictionary.entries
             let asrCtx = GlossaryBuilder.buildForASR(activeBackend,
-                                                     entries: state.dictionary.entries,
+                                                     entries: captureEntries,
                                                      language: state.language)
-            let snippet = state.profiles.lookup(bundleID: bid)?.systemPromptSnippet
             currentDebugWriter = DebugCaptureWriter.begin(
                 state: state,
                 backend: activeBackend,
                 language: state.language,
                 liveMode: useLive,
                 frontmostBundleID: bid,
-                profileSnippet: snippet,
                 asrContext: asrCtx
             )
 
@@ -703,27 +703,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // ASR-side state: live mode uses the early snapshot (captured at Fn↓);
         // batch mode snapshots at Fn↑. Refine/inject snapshots are always Fn↑.
+        // v0.8.0 #B5: dictEntries is already per-app filtered in both branches
+        // (live path filters at Fn↓ in startLiveTranscriberIfEnabled; batch
+        // path filters here at Fn↑) — every downstream consumer hits this
+        // narrowed list, so hotword scope obeys the active profile uniformly.
         let backend: ASRBackend
         let language: Language
         let dictEntries: [DictionaryEntry]
         let asrContext: String?
         let frontmostBundleID: String?
-        let profileSnippet: String?
         if let snap = liveSnap {
             backend = snap.backend
             language = snap.language
             dictEntries = snap.dictEntries
             asrContext = snap.asrContext
             frontmostBundleID = snap.frontmostBundleID
-            profileSnippet = snap.profileSnippet
         } else {
             backend = activeBackend
             language = state.language
-            dictEntries = state.dictionary.entries
             frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-            asrContext = GlossaryBuilder.buildForASR(backend, entries: dictEntries, language: language)
             let profile = state.profiles.lookup(bundleID: frontmostBundleID)
-            profileSnippet = profile?.systemPromptSnippet
+            dictEntries = profile?.effectiveEntries(global: state.dictionary.entries)
+                ?? state.dictionary.entries
+            asrContext = GlossaryBuilder.buildForASR(backend, entries: dictEntries, language: language)
             if let profile {
                 Log.dev(Log.app, "Context profile: \(profile.name) (bundle=\(profile.bundleID))")
             }
@@ -785,8 +787,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         trimmed,
                         language: language,
                         mode: mode,
-                        glossary: glossary,
-                        profileSnippet: profileSnippet
+                        glossary: glossary
                     )
                     tracker.mark(.llmEnd)
                     let trimmedRefined = refined.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -801,7 +802,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         backend: refineCaptureBackend,
                         latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
                         glossary: glossary,
-                        profileSnippet: profileSnippet,
                         rawFirst: false,
                         mlxActiveMb: mlx.active,
                         mlxCacheMb: mlx.cache,
@@ -915,7 +915,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     dictEntries: dictEntries,
                     llmConfig: llmConfig,
                     backend: backend,
-                    profileSnippet: profileSnippet,
                     tracker: tracker,
                     captureWriter: captureWriter
                 )
@@ -928,7 +927,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         language: language,
                         dictEntries: dictEntries,
                         backend: backend,
-                        profileSnippet: profileSnippet,
                         tracker: tracker,
                         captureWriter: captureWriter
                     )
@@ -941,7 +939,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         dictEntries: dictEntries,
                         llmConfig: llmConfig,
                         backend: backend,
-                        profileSnippet: profileSnippet,
                         tracker: tracker,
                         captureWriter: captureWriter
                     )
@@ -1000,7 +997,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dictEntries: [DictionaryEntry],
         llmConfig: LLMConfig,
         backend: ASRBackend,
-        profileSnippet: String?,
         tracker: LatencyTracker,
         captureWriter: DebugCaptureWriter?
     ) async {
@@ -1024,8 +1020,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 raw,
                 language: language,
                 mode: mode,
-                glossary: glossary,
-                profileSnippet: profileSnippet
+                glossary: glossary
             )
             tracker.mark(.llmEnd)
             let mlx = LocalMLXRefiner.memSnapshotMb()
@@ -1038,7 +1033,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backend: refineCaptureBackend,
                 latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
                 glossary: glossary,
-                profileSnippet: profileSnippet,
                 rawFirst: false,
                 mlxActiveMb: mlx.active,
                 mlxCacheMb: mlx.cache,
@@ -1088,7 +1082,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         language: Language,
         dictEntries: [DictionaryEntry],
         backend: ASRBackend,
-        profileSnippet: String?,
         tracker: LatencyTracker,
         captureWriter: DebugCaptureWriter?
     ) async {
@@ -1124,8 +1117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             raw,
             language: language,
             mode: mode,
-            glossary: glossary,
-            profileSnippet: profileSnippet
+            glossary: glossary
         )
 
         // Wrap upstream with the focus-loss watch + capsule progress counter.
@@ -1172,7 +1164,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backend: refineCaptureBackend,
             latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
             glossary: glossary,
-            profileSnippet: profileSnippet,
             rawFirst: false,
             mlxActiveMb: mlx.active,
             mlxCacheMb: mlx.cache,

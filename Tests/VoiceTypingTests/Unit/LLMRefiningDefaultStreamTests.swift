@@ -15,8 +15,7 @@ final class LLMRefiningDefaultStreamTests: XCTestCase {
         func refine(_ text: String,
                     language: Language,
                     mode: RefineMode,
-                    glossary: String?,
-                    profileSnippet: String?) async -> String {
+                    glossary: String?) async -> String {
             return reply
         }
 
@@ -31,8 +30,7 @@ final class LLMRefiningDefaultStreamTests: XCTestCase {
         for try await chunk in stub.refineStream("raw",
                                                  language: .en,
                                                  mode: .light,
-                                                 glossary: nil,
-                                                 profileSnippet: nil) {
+                                                 glossary: nil) {
             chunks.append(chunk)
         }
         XCTAssertEqual(chunks, ["polished"])
@@ -44,8 +42,7 @@ final class LLMRefiningDefaultStreamTests: XCTestCase {
         for try await _ in stub.refineStream("raw",
                                              language: .en,
                                              mode: .light,
-                                             glossary: nil,
-                                             profileSnippet: nil) {
+                                             glossary: nil) {
             count += 1
         }
         // The for-loop exiting cleanly = the stream finished. If `finish()`
@@ -61,14 +58,12 @@ final class LLMRefiningDefaultStreamTests: XCTestCase {
             var language: Language?
             var mode: RefineMode?
             var glossary: String?
-            var profileSnippet: String?
             func record(_ text: String, _ lang: Language, _ mode: RefineMode,
-                        _ glossary: String?, _ profileSnippet: String?) {
+                        _ glossary: String?) {
                 self.text = text
                 self.language = lang
                 self.mode = mode
                 self.glossary = glossary
-                self.profileSnippet = profileSnippet
             }
         }
         struct CaptureRefiner: LLMRefining {
@@ -76,9 +71,8 @@ final class LLMRefiningDefaultStreamTests: XCTestCase {
             func refine(_ text: String,
                         language: Language,
                         mode: RefineMode,
-                        glossary: String?,
-                        profileSnippet: String?) async -> String {
-                await captured.record(text, language, mode, glossary, profileSnippet)
+                        glossary: String?) async -> String {
+                await captured.record(text, language, mode, glossary)
                 return "ok"
             }
             func test() async -> LLMRefiningTestResult { .ok(sampleReply: "ok") }
@@ -89,20 +83,17 @@ final class LLMRefiningDefaultStreamTests: XCTestCase {
         for try await _ in stub.refineStream("the input",
                                              language: .zhCN,
                                              mode: .aggressive,
-                                             glossary: "term1: pronunciation",
-                                             profileSnippet: "user prefers terse output") {
+                                             glossary: "term1: pronunciation") {
         }
 
         let text = await captured.text
         let lang = await captured.language
         let mode = await captured.mode
         let glossary = await captured.glossary
-        let snippet = await captured.profileSnippet
 
         XCTAssertEqual(text, "the input")
         XCTAssertEqual(lang, .zhCN)
         XCTAssertEqual(mode, .aggressive)
         XCTAssertEqual(glossary, "term1: pronunciation")
-        XCTAssertEqual(snippet, "user prefers terse output")
     }
 }

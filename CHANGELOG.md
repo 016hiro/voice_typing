@@ -6,6 +6,26 @@
 
 _（下个版本的用户可见变更在此累积）_
 
+## v0.8.0 — 2026-05-22
+
+### Added
+- **App hotwords**（Settings 新一页，替换原 "Profiles" 页）：每个 app 可以**独立设置自己的热词**。模型是"全局共享 + app 私有追加"：
+  - 全局 Dictionary 仍然是"到处都要的词"（你的名字、通用技术词），所有 app 默认都用
+  - 每个 app 额外能加自己的私有热词（在 app 的 profile 里直接增删改，跟全局 Dictionary 一样的 term/读音/备注）
+  - 每个 app 可单独关掉"也用全局热词"——比如在微信里关掉编程词避免聊天被改写，只留微信专属的人名
+  - 生效热词 = (开了全局?全局:空) + 该 app 私有词；没配 profile 的 app 仍是纯全局，行为不变
+- **短句 refine 跳过 + 热词保护**（v0.8.0 #S1）：录入很短的句子（"好的"、"谢谢"）默认跳过 LLM refine 直接注入，省 1-2 s 等待。但如果短句内含热词（或拼音近似热词，例如 ASR 把 "Qwen" 听成 "曲文" / "千问"），仍走 refine 让模型修正。dogfood 实测能直接吃掉约 16% 的 refine 调用而不丢热词修正
+
+### Fixed
+- **Clean Up 模式偶尔拒绝改正热词**：refine prompt 里有句 "MUST NOT rewrite"，而同一份 prompt 后面又附 "Rewrite these user pronunciations to ..." 的热词改写指令——模型看到同一个词同时是禁令和指令，行为不稳。把禁令里的 "rewrite" 换成更精确的 "paraphrase / restructure / translate / summarize"，glossary 段标题改成 "Replace"，两边不再撞车
+
+### Removed
+- **Profiles 页的"per-app system prompt snippet"字段**：6 个月 dogfood 零使用，整页改为 per-app 热词更聚焦。如果以前在 profile 里填过 snippet 文本，第一次跑 v0.8.0 会被静默丢弃；其他字段（app / enabled）保留
+
+### Notes
+- App hotwords 的模型决策（全局共享 + app 私有，为什么不是"挑全局子集"）见 [`docs/decisions/0005-per-app-independent-hotwords.md`](docs/decisions/0005-per-app-independent-hotwords.md)
+- 完整开发记录：[`docs/devlog/v0.8.0.md`](docs/devlog/v0.8.0.md)
+
 ## v0.7.3 — 2026-05-11
 
 ### Fixed

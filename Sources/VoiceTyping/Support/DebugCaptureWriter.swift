@@ -49,7 +49,6 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let language: String
         let liveMode: Bool
         let frontmostBundleID: String?
-        let profileSnippet: String?
         let asrContextChars: Int
         var totalAudioSec: Double?
         var totalSegments: Int?
@@ -132,7 +131,6 @@ final class DebugCaptureWriter: @unchecked Sendable {
         let backend: String            // "cloud" or "local"
         let latencyMs: Int             // wall-clock of the refine() await
         let glossary: String?          // GlossaryBuilder.buildLLMGlossary output (nil if dictionary empty)
-        let profileSnippet: String?    // per-app override snippet (nil if none)
         let rawFirst: Bool             // false = paste-after-refine; true = paste-then-refine flow
         // v0.7.3 #B8a: process-wide MLX memory snapshot at refine end (MB).
         // Optional so older builds' jsonl decode + cloud-only paths stay valid.
@@ -176,7 +174,6 @@ final class DebugCaptureWriter: @unchecked Sendable {
         language: Language,
         liveMode: Bool,
         frontmostBundleID: String?,
-        profileSnippet: String?,
         asrContext: String?
     ) -> DebugCaptureWriter? {
         guard state.debugCaptureEnabled else { return nil }
@@ -203,7 +200,6 @@ final class DebugCaptureWriter: @unchecked Sendable {
             language: language.rawValue,
             liveMode: liveMode,
             frontmostBundleID: frontmostBundleID,
-            profileSnippet: profileSnippet,
             asrContextChars: asrContext?.count ?? 0,
             totalAudioSec: nil,
             totalSegments: nil,

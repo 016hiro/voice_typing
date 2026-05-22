@@ -100,7 +100,13 @@ enum GlossaryBuilder {
     /// Produces a Markdown glossary to append after the RefineMode system prompt.
     /// Entries are split by shape so the LLM gets an unambiguous instruction for each:
     ///   - `term` only  → Preserve section (do not paraphrase).
-    ///   - `term + hints` → Rewrite section (map each hint to the canonical term).
+    ///   - `term + hints` → Replace section (map each hint to the canonical term).
+    ///
+    /// v0.8.0 wording fix: the section header used to say "Rewrite", which
+    /// directly contradicted the mode prompt's `MUST NOT: rewrite` rule and
+    /// caused dogfood-visible model confusion. The renamed section + the
+    /// dropped keyword in `RefineMode.lightPrompt` resolves the conflict.
+    ///
     /// Returns nil if the dictionary is empty.
     static func buildLLMGlossary(from entries: [DictionaryEntry],
                                  budget: Int = llmBudget) -> String? {
@@ -123,7 +129,7 @@ enum GlossaryBuilder {
 
         if !rewrite.isEmpty {
             lines.append("")
-            lines.append("Rewrite these user pronunciations to the canonical spelling on the right:")
+            lines.append("Replace these user pronunciations with the canonical spelling on the right (this is the ASR-error fix from job 1; the mode's MUST NOT rules do not apply to these tokens):")
             for e in rewrite {
                 let hints = e.pronunciationHints.joined(separator: " / ")
                 lines.append("- \(hints) → \(e.term)")

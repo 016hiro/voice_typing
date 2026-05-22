@@ -33,17 +33,21 @@ final class GlossaryBuilderTests: XCTestCase {
 
     // MARK: - buildLLMGlossary
 
-    func testLLMGlossary_splitsPreserveAndRewrite() {
+    func testLLMGlossary_splitsPreserveAndReplace() {
         let entries = [
             DictionaryEntry(term: "SwiftUI"),
             DictionaryEntry(term: "Combine", pronunciationHints: ["com bine", "koom byne"])
         ]
         let out = GlossaryBuilder.buildLLMGlossary(from: entries)
         XCTAssertNotNil(out)
-        // Term-only entry goes under "Preserve"; hinted entry under "Rewrite".
+        // v0.8.0: section header changed from "Rewrite" → "Replace" to avoid
+        // colliding with the mode prompt's `MUST NOT: rewrite` rule. Term-only
+        // entries go under "Preserve"; hinted entries under "Replace".
         XCTAssertTrue(out!.contains("Preserve"))
         XCTAssertTrue(out!.contains("- SwiftUI"))
-        XCTAssertTrue(out!.contains("Rewrite"))
+        XCTAssertTrue(out!.contains("Replace"))
+        XCTAssertFalse(out!.contains("Rewrite"),
+                       "Stale 'Rewrite' header would re-introduce the cleanup-mode keyword conflict")
         XCTAssertTrue(out!.contains("com bine / koom byne → Combine"))
     }
 

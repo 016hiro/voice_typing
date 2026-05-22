@@ -59,21 +59,23 @@ extension AppDelegate {
 
         // Snapshot ASR-side state at Fn↓ so a mid-recording dictionary edit
         // doesn't desync the bias context from the hit detection that runs
-        // post-transcribe.
+        // post-transcribe. v0.8.0 #B5: resolve the per-app effective hotword
+        // set (global ∪ app-private, per ADR-0005) before any downstream
+        // consumer sees it — ASR bias, refine glossary, and the skip-gate
+        // guard must all share this list.
         let language = state.language
-        let dictEntries = state.dictionary.entries
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let asrContext = GlossaryBuilder.buildForASR(activeBackend, entries: dictEntries, language: language)
         let profile = state.profiles.lookup(bundleID: frontmostBundleID)
-        let profileSnippet = profile?.systemPromptSnippet
+        let dictEntries = profile?.effectiveEntries(global: state.dictionary.entries)
+            ?? state.dictionary.entries
+        let asrContext = GlossaryBuilder.buildForASR(activeBackend, entries: dictEntries, language: language)
 
         liveSnapshot = LiveRunSnapshot(
             backend: activeBackend,
             language: language,
             dictEntries: dictEntries,
             asrContext: asrContext,
-            frontmostBundleID: frontmostBundleID,
-            profileSnippet: profileSnippet
+            frontmostBundleID: frontmostBundleID
         )
 
         // v0.7.0 #R9 redo: live + refine bifurcates by backend.
@@ -101,8 +103,7 @@ extension AppDelegate {
         let localLiveSession: LocalLiveSegmentSession? = useLocalPerSegment
             ? localRefinerInstance.makeLiveSegmentSession(
                 mode: refineMode,
-                glossary: segmentGlossary,
-                profileSnippet: profileSnippet)
+                glossary: segmentGlossary)
             : nil
         if useLocalPerSegment {
             Log.app.info("Live: local per-segment streaming refine session opened")
@@ -223,7 +224,6 @@ extension AppDelegate {
                                     backend: "local",
                                     latencyMs: 0,
                                     glossary: segmentGlossary,
-                                    profileSnippet: profileSnippet,
                                     rawFirst: false,
                                     mlxActiveMb: nil,
                                     mlxCacheMb: nil,
@@ -284,7 +284,6 @@ extension AppDelegate {
                                         backend: "local",
                                         latencyMs: Int(Date().timeIntervalSince(refineStarted) * 1000),
                                         glossary: segmentGlossary,
-                                        profileSnippet: profileSnippet,
                                         rawFirst: false,
                                         mlxActiveMb: mlx.active,
                                         mlxCacheMb: mlx.cache,

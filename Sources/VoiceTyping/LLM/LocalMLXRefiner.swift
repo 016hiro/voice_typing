@@ -104,15 +104,13 @@ actor LocalMLXRefiner: LLMRefining {
     nonisolated func refine(_ text: String,
                             language: Language,
                             mode: RefineMode,
-                            glossary: String?,
-                            profileSnippet: String?) async -> String {
+                            glossary: String?) async -> String {
         var accumulated = ""
         do {
             for try await chunk in refineStream(text,
                                                 language: language,
                                                 mode: mode,
-                                                glossary: glossary,
-                                                profileSnippet: profileSnippet) {
+                                                glossary: glossary) {
                 accumulated += chunk
             }
         } catch {
@@ -138,14 +136,12 @@ actor LocalMLXRefiner: LLMRefining {
     nonisolated func refineStream(_ text: String,
                                   language: Language,
                                   mode: RefineMode,
-                                  glossary: String?,
-                                  profileSnippet: String?) -> AsyncThrowingStream<String, Error> {
+                                  glossary: String?) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [self] in
                 await self.refineStreamImpl(text,
                                             mode: mode,
                                             glossary: glossary,
-                                            profileSnippet: profileSnippet,
                                             continuation: continuation)
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -155,7 +151,6 @@ actor LocalMLXRefiner: LLMRefining {
     private func refineStreamImpl(_ text: String,
                                   mode: RefineMode,
                                   glossary: String?,
-                                  profileSnippet: String?,
                                   continuation: AsyncThrowingStream<String, Error>.Continuation) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { continuation.finish(); return }
@@ -168,7 +163,6 @@ actor LocalMLXRefiner: LLMRefining {
 
         let finalSystem = LLMRefiningHelpers.compose(
             systemPrompt: systemPrompt,
-            profileSnippet: profileSnippet,
             glossary: glossary
         )
 
@@ -256,13 +250,11 @@ actor LocalMLXRefiner: LLMRefining {
     /// pronouns. Created at Fn↓; `end()` called at Fn↑ to release the
     /// session and its KV cache.
     nonisolated func makeLiveSegmentSession(mode: RefineMode,
-                                            glossary: String?,
-                                            profileSnippet: String?) -> LocalLiveSegmentSession {
+                                            glossary: String?) -> LocalLiveSegmentSession {
         return LocalLiveSegmentSession(
             refiner: self,
             mode: mode,
-            glossary: glossary,
-            profileSnippet: profileSnippet
+            glossary: glossary
         )
     }
 
@@ -332,14 +324,12 @@ actor LocalLiveSegmentSession {
 
     init(refiner: LocalMLXRefiner,
          mode: RefineMode,
-         glossary: String?,
-         profileSnippet: String?) {
+         glossary: String?) {
         self.refiner = refiner
         self.mode = mode
         let baseSystem = mode.systemPrompt ?? ""
         self.finalSystem = LLMRefiningHelpers.compose(
             systemPrompt: baseSystem,
-            profileSnippet: profileSnippet,
             glossary: glossary
         )
     }

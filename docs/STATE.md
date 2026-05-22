@@ -1,30 +1,29 @@
 # STATE
 
-_Last updated: 2026-05-15_
+_Last updated: 2026-05-21_
 
 ## Current Focus
 
-**v0.8.0 — Per-app hotwords + short-skip**：主线 #B5 per-app 热词配置（schema + UI 待 `/think` 拍板）+ 副线 #S1 短句 refine skip heuristic（variant C rule heuristic + Layer 1 substring hotword guard + Layer 2 phonetic hotword guard via NLTokenizer/CFStringTransform）。#S2 memoization cache 经离线 replay 验证 0% 命中率，已否决。v0.7.3 #B1 telemetry 跑出 ~50% no-op，#S1 数据驱动设计能吃掉约 15% 的 LLM wait time 而 precision 保 95.7%。
-
-**v0.8.1 — E2E refine quality eval**（已 skeleton，未启动）：#E1 公开 ASR-correction 数据集跑 refine-only 文本 CER（CI 友好）+ #E2 自有 captures 手标 gold 跑整条 pipeline CER。不评 ASR 单独 WER/CER（Qwen 官方已提供）。
+**v0.8.1 — E2E refine quality eval**（skeleton 2026-05-12，待启动）：#E1 公开 ASR-correction 数据集跑 refine-only 文本 CER（CI 友好）+ #E2 自有 captures 手标 gold 跑整条 pipeline CER。不评 ASR 单独 WER/CER（Qwen 官方已提供）。两套 eval 在 v0.8.0 prompt 改后特别有价值——能 catch 未来 cleanup-mode 行为漂移。
 
 ## Current Version
 
-**v0.8.0**（skeleton，主线 #B5 per-app hotwords schema + UI 决策阻塞）
+**v0.8.1**（待启动）。
 
-已 ship 版本：v0.7.3 (2026-05-11) / v0.7.2 (2026-05-07) / v0.7.1 (2026-05-02) / v0.7.0 (2026-05-02) / v0.6.4 (2026-05-01) / v0.6.3 (2026-05-01)。
+已 ship 版本：v0.8.0 (2026-05-21) / v0.7.3 (2026-05-11) / v0.7.2 (2026-05-07) / v0.7.1 (2026-05-02) / v0.7.0 (2026-05-02) / v0.6.4 (2026-05-01) / v0.6.3 (2026-05-01)。
 
 ## In-flight Changes
 
-副线 #S1 Swift 实施已落地（未发版）：`RefineSkipHeuristic` + `PhoneticMatcher` 两个新模块挂入 `AppDelegate+Live.swift` 的 local-per-segment 分支；`RefineRecord` 加 `gate` 字段同时区分 skipped / rule / hotword_substring / hotword_phonetic 四态；`Scripts/analysis/skip_gate_report.py` 读 dogfood 数据回答 skip 占比 + 节省延迟。223 test 全过。v0.7.3 cacheLimit 路线 `decisions/0003-bound-mlx-cache-pool.md`。
+无（v0.8.0 已 close-iteration + dogfood 验证，待 `make release + gh release`）。v0.8.0 关键决策 `decisions/0005-per-app-independent-hotwords.md`（supersedes 0004）：`ContextProfile` 砍 `systemPromptSnippet`，换成 `entries: [DictionaryEntry]` + `includeGlobal: Bool`——全局共享 baseline + app 私有追加。Settings 页 "Profiles" → "App hotwords"。
 
 ## Next Concrete Step
 
-#S1 dogfood ≥1 周后跑 `skip_gate_report.py`，看实际 skip 占比是否接近 prototype 预测的 ~16%、phonetic guard FP 率是否在可接受范围。主线 #B5 per-app hotwords schema 仍待 `/think` 拍板，独立于 #S1 推进。
+`make release + gh release` 触发 v0.8.0 发版，然后启动 v0.8.1 #E1（refine-only CER eval）——先扫公开 ASR-correction 数据集挑 1-2 个许可证 OK 的，写 `Scripts/eval/refine_cer.py` 跑出基线。v0.8.0 prompt 修复（`MUST NOT rewrite` vs glossary `Rewrite` 内部矛盾）的稳定性验证用 #E1 兜底。
 
 ## Blockers / Open Questions
 
-- **v0.8.0 #B5 per-app hotwords schema 决策** —— 见 `docs/todo/v0.8.0.md`，三种 schema 候选 + UI 设计都未拍。
+- **v0.8.0 post-ship 验证** —— 旧 profile JSON 静默丢 snippet/dictionaryFilter 字段并重置为"用全局+无私有"，无报告 = pass；refine cleanup mode 行为稳定性靠 #E1 兜底。
+- **#S1 dogfood ≥1 周后跑 `skip_gate_report.py`** —— 已迁 backlog，1 周后回看 phonetic guard FP 率，必要时收紧阈值。
 - **v0.7.3 post-ship 验证** —— cache clamp 1 GB 在 13 条 dogfood 上确证，但若 1-2 周内出现长 uptime 下 allocator churn（p50 拉升），调到 2 GB 再观察。
 - **v0.7.0 carry-over 仍 pending**：`#R10` streaming integration tests / `#R11` 16 GB Mac dogfood / `replaceLastInjection` IME bypass —— 全在 backlog，dogfood 信号触发再合并。
 - **v0.7.3 #B4 派生** —— refiner cold-path 分析工具（`Scripts/analysis/refine_cold_path.py` + `docs/perf/refiner-baseline.md`），进 backlog，不阻塞任何版本。

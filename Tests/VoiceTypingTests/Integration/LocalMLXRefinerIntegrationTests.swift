@@ -61,8 +61,7 @@ final class LocalMLXRefinerIntegrationTests: XCTestCase {
             "嗯, 这是一个 test 句子, 包含 mixed 中英文",
             language: .zhCN,
             mode: .aggressive,
-            glossary: nil,
-            profileSnippet: nil
+            glossary: nil
         )
         let totalMs = Int(Date().timeIntervalSince(t0) * 1000)
 
@@ -110,14 +109,14 @@ final class LocalMLXRefinerIntegrationTests: XCTestCase {
         let refiner = LocalMLXRefiner(modelDirectory: modelDirectory)
         // Discard cold-path call. Don't time this one — it includes load.
         _ = await refiner.refine("warmup", language: .en, mode: .light,
-                                  glossary: nil, profileSnippet: nil)
+                                  glossary: nil)
 
         // Time the warm second call.
         let t0 = Date()
         let output = await refiner.refine(
             "Hello, world.",
             language: .en, mode: .light,
-            glossary: nil, profileSnippet: nil
+            glossary: nil
         )
         let warmMs = Int(Date().timeIntervalSince(t0) * 1000)
 

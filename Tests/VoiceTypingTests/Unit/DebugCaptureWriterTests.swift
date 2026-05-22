@@ -118,7 +118,7 @@ final class DebugCaptureWriterTests: XCTestCase {
             sessionId: "bugA0001", appVersion: "test", gitCommitSHA: nil,
             startedAt: Date(), endedAt: nil,
             backend: "qwen", language: "zh", liveMode: false, frontmostBundleID: nil,
-            profileSnippet: nil, asrContextChars: 0,
+            asrContextChars: 0,
             totalAudioSec: nil, totalSegments: nil, totalInjections: nil, totalRefines: nil
         )
         let audio = AudioBuffer(samples: [Float](repeating: 0, count: 16_000), sampleRate: 16_000)
@@ -166,7 +166,6 @@ final class DebugCaptureWriterTests: XCTestCase {
             backend: "cloud",
             latencyMs: 312,
             glossary: "热词：World, Hello",
-            profileSnippet: nil,
             rawFirst: false,
             mlxActiveMb: nil,
             mlxCacheMb: nil,
@@ -181,7 +180,6 @@ final class DebugCaptureWriterTests: XCTestCase {
             backend: "local",
             latencyMs: 745,
             glossary: nil,
-            profileSnippet: "Prefer terse, technical phrasing.",
             rawFirst: true,
             mlxActiveMb: 2400,
             mlxCacheMb: 320,
@@ -242,7 +240,7 @@ final class DebugCaptureWriterTests: XCTestCase {
 
         writer.appendRefine(.init(timestamp: Date(), input: "late", output: "late",
                                    mode: "light", backend: "cloud",
-                                   latencyMs: 100, glossary: nil, profileSnippet: nil, rawFirst: false,
+                                   latencyMs: 100, glossary: nil, rawFirst: false,
                                    mlxActiveMb: nil, mlxCacheMb: nil, mlxPeakMb: nil, gate: nil))
         drain(writer)
 
@@ -286,7 +284,6 @@ final class DebugCaptureWriterTests: XCTestCase {
             language: "zh",
             liveMode: false,
             frontmostBundleID: "com.test.app",
-            profileSnippet: nil,
             asrContextChars: 0,
             totalAudioSec: nil,
             totalSegments: nil,

@@ -13,15 +13,14 @@ import Foundation
 /// local) is injected at init — refine/test methods stay impl-agnostic.
 protocol LLMRefining: Sendable {
 
-    /// Refines `text` per `mode`. `glossary` and `profileSnippet`, when present,
-    /// are appended to `mode`'s system prompt as additional context. On any
-    /// failure (network, decode, empty creds, model error) returns `text`
-    /// unchanged — fail-open behavior matching v0.1+.
+    /// Refines `text` per `mode`. `glossary`, when present, is appended to
+    /// `mode`'s system prompt as additional context. On any failure (network,
+    /// decode, empty creds, model error) returns `text` unchanged — fail-open
+    /// behavior matching v0.1+.
     func refine(_ text: String,
                 language: Language,
                 mode: RefineMode,
-                glossary: String?,
-                profileSnippet: String?) async -> String
+                glossary: String?) async -> String
 
     /// v0.7.0: streaming variant — yields *delta* chunks (not cumulative) as
     /// the LLM produces them. Used by the streaming inject path; the batch
@@ -41,8 +40,7 @@ protocol LLMRefining: Sendable {
     func refineStream(_ text: String,
                       language: Language,
                       mode: RefineMode,
-                      glossary: String?,
-                      profileSnippet: String?) -> AsyncThrowingStream<String, Error>
+                      glossary: String?) -> AsyncThrowingStream<String, Error>
 
     /// Sends a tiny test request to confirm the impl is wired up correctly
     /// (credentials valid, endpoint reachable, weights loaded, etc.). Used by
@@ -59,15 +57,13 @@ extension LLMRefining {
     func refineStream(_ text: String,
                       language: Language,
                       mode: RefineMode,
-                      glossary: String?,
-                      profileSnippet: String?) -> AsyncThrowingStream<String, Error> {
+                      glossary: String?) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 let result = await self.refine(text,
                                                language: language,
                                                mode: mode,
-                                               glossary: glossary,
-                                               profileSnippet: profileSnippet)
+                                               glossary: glossary)
                 continuation.yield(result)
                 continuation.finish()
             }
@@ -85,17 +81,11 @@ enum LLMRefiningTestResult: Sendable {
 /// `LocalMLXRefiner`. Pure functions — no I/O, no model state.
 enum LLMRefiningHelpers {
 
-    /// Composes the final system prompt by stacking parts from most general
-    /// to most specific: `mode baseline → per-app profile → custom glossary`.
-    /// Empty/whitespace parts are skipped.
+    /// Composes the final system prompt by stacking parts: `mode baseline →
+    /// custom glossary`. Empty/whitespace parts are skipped.
     static func compose(systemPrompt: String,
-                        profileSnippet: String?,
                         glossary: String?) -> String {
         var parts: [String] = [systemPrompt]
-        if let snippet = profileSnippet?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !snippet.isEmpty {
-            parts.append(snippet)
-        }
         if let glossary, !glossary.isEmpty {
             parts.append(glossary)
         }
