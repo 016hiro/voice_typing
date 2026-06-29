@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 
 public struct AudioBuffer: Sendable {
     public let samples: [Float]          // mono float32 [-1, 1]
@@ -15,14 +17,29 @@ public struct AudioBuffer: Sendable {
 /// recording as a 16 kHz mono float32 buffer on stop.
 public final class AudioCapture: @unchecked Sendable {
 
-    public enum CaptureError: Error {
+    public enum CaptureError: LocalizedError {
         case engineStart(Error)
         case conversionSetupFailed
+        case noBuiltInInputDevice
+        case audioUnitSetup(String, OSStatus)
+
+        public var errorDescription: String? {
+            switch self {
+            case .engineStart(let error):
+                return "Audio engine start failed: \(error.localizedDescription)"
+            case .conversionSetupFailed:
+                return "Audio converter setup failed"
+            case .noBuiltInInputDevice:
+                return "Built-in microphone not found"
+            case .audioUnitSetup(let operation, let status):
+                return "\(operation) failed: status=\(status)"
+            }
+        }
     }
 
-    private let engine = AVAudioEngine()
+    private var audioUnit: AudioUnit?
     private var converter: AVAudioConverter?
-    private var inputFormat: AVAudioFormat!
+    private var inputFormat: AVAudioFormat?
     private let outputFormat: AVAudioFormat = {
         AVAudioFormat(commonFormat: .pcmFormatFloat32,
                       sampleRate: 16_000,
@@ -62,14 +79,50 @@ public final class AudioCapture: @unchecked Sendable {
     ///   yielding, but levels keep emitting so the waveform stays visually alive.
     public func start(maxDuration: TimeInterval = 60.0) throws -> StartOutputs {
         self.maxDuration = maxDuration
-        let node = engine.inputNode
-        let inFmt = node.outputFormat(forBus: 0)
-        self.inputFormat = inFmt
+        guard let device = CoreAudioInputDevice.preferredBuiltInInput() else {
+            throw CaptureError.noBuiltInInputDevice
+        }
+        let inFmt = try Self.inputFormat(for: device)
 
         guard let converter = AVAudioConverter(from: inFmt, to: outputFormat) else {
             throw CaptureError.conversionSetupFailed
         }
+        let outputs = prepareSession(inputFormat: inFmt, converter: converter, maxDuration: maxDuration)
+
+        do {
+            try startHALInput(device: device, format: inFmt)
+        } catch {
+            resetSessionState()
+            throw CaptureError.engineStart(error)
+        }
+
+        Log.audio.info("AudioCapture started: \(inFmt.description) device=\(device.name, privacy: .public)")
+        return outputs
+    }
+
+    public func stop() -> AudioBuffer {
+        stopHALInput()
+        levelsContinuation?.finish()
+        levelsContinuation = nil
+        samplesContinuation?.finish()
+        samplesContinuation = nil
+        converter = nil
+        inputFormat = nil
+
+        accumulatorLock.lock()
+        let samples = accumulator
+        accumulator.removeAll()
+        accumulatorLock.unlock()
+
+        Log.audio.info("AudioCapture stopped: \(samples.count) samples at 16kHz (\(Double(samples.count) / 16000.0)s)")
+        return AudioBuffer(samples: samples, sampleRate: 16_000)
+    }
+
+    func prepareSession(inputFormat inFmt: AVAudioFormat,
+                        converter: AVAudioConverter,
+                        maxDuration: TimeInterval) -> StartOutputs {
         self.converter = converter
+        inputFormat = inFmt
 
         accumulatorLock.lock()
         accumulator.removeAll(keepingCapacity: true)
@@ -79,51 +132,196 @@ public final class AudioCapture: @unchecked Sendable {
         startedAt = Date()
 
         let (levelsStream, levelsCont) = AsyncStream<Float>.makeStream(bufferingPolicy: .bufferingNewest(8))
-        self.levelsContinuation = levelsCont
+        levelsContinuation = levelsCont
 
         // `.unbounded` on the samples stream: the consumer (LiveTranscriber) is
         // off the audio thread, so yields buffer briefly. At ~341 samples / 7 ms
         // tap interval × 600 s cap = ~85 K yields max if the consumer never reads —
         // not a real-world concern but worth noting in case of a bug downstream.
         let (samplesStream, samplesCont) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .unbounded)
-        self.samplesContinuation = samplesCont
+        samplesContinuation = samplesCont
 
-        node.removeTap(onBus: 0)
-        node.installTap(onBus: 0, bufferSize: 1024, format: inFmt) { [weak self] buffer, _ in
-            self?.handle(buffer: buffer)
-        }
-
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            node.removeTap(onBus: 0)
-            levelsContinuation?.finish()
-            levelsContinuation = nil
-            samplesContinuation?.finish()
-            samplesContinuation = nil
-            throw CaptureError.engineStart(error)
-        }
-
-        Log.audio.info("AudioCapture started: \(inFmt.description)")
         return StartOutputs(levels: levelsStream, samples: samplesStream)
     }
 
-    public func stop() -> AudioBuffer {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+    var preparedInputFormatSampleRate: Double? {
+        inputFormat?.sampleRate
+    }
+
+    private func resetSessionState() {
         levelsContinuation?.finish()
         levelsContinuation = nil
         samplesContinuation?.finish()
         samplesContinuation = nil
+        converter = nil
+        inputFormat = nil
+    }
 
-        accumulatorLock.lock()
-        let samples = accumulator
-        accumulator.removeAll()
-        accumulatorLock.unlock()
+    // MARK: - CoreAudio HAL input
 
-        Log.audio.info("AudioCapture stopped: \(samples.count) samples at 16kHz (\(Double(samples.count) / 16000.0)s)")
-        return AudioBuffer(samples: samples, sampleRate: 16_000)
+    private static func inputFormat(for device: CoreAudioInputDevice.Device) throws -> AVAudioFormat {
+        let sampleRate = CoreAudioInputDevice.nominalSampleRate(for: device.id) ?? 48_000
+        let channelCount = max(AVAudioChannelCount(1), AVAudioChannelCount(device.inputChannels))
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: sampleRate,
+                                         channels: channelCount,
+                                         interleaved: false) else {
+            throw CaptureError.conversionSetupFailed
+        }
+        return format
+    }
+
+    private func startHALInput(device: CoreAudioInputDevice.Device, format: AVAudioFormat) throws {
+        var desc = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        guard let component = AudioComponentFindNext(nil, &desc) else {
+            throw CaptureError.audioUnitSetup("Find HAL output unit", -1)
+        }
+
+        var newUnit: AudioComponentInstance?
+        try check(AudioComponentInstanceNew(component, &newUnit), "Create HAL output unit")
+        guard let unit = newUnit else {
+            throw CaptureError.audioUnitSetup("Create HAL output unit", -1)
+        }
+
+        do {
+            var enableInput: UInt32 = 1
+            try check(
+                AudioUnitSetProperty(
+                    unit,
+                    kAudioOutputUnitProperty_EnableIO,
+                    kAudioUnitScope_Input,
+                    1,
+                    &enableInput,
+                    UInt32(MemoryLayout<UInt32>.size)
+                ),
+                "Enable HAL input"
+            )
+
+            var disableOutput: UInt32 = 0
+            try check(
+                AudioUnitSetProperty(
+                    unit,
+                    kAudioOutputUnitProperty_EnableIO,
+                    kAudioUnitScope_Output,
+                    0,
+                    &disableOutput,
+                    UInt32(MemoryLayout<UInt32>.size)
+                ),
+                "Disable HAL output"
+            )
+
+            var deviceID = device.id
+            try check(
+                AudioUnitSetProperty(
+                    unit,
+                    kAudioOutputUnitProperty_CurrentDevice,
+                    kAudioUnitScope_Global,
+                    0,
+                    &deviceID,
+                    UInt32(MemoryLayout<AudioDeviceID>.size)
+                ),
+                "Select HAL input device"
+            )
+
+            var streamFormat = format.streamDescription.pointee
+            try check(
+                AudioUnitSetProperty(
+                    unit,
+                    kAudioUnitProperty_StreamFormat,
+                    kAudioUnitScope_Output,
+                    1,
+                    &streamFormat,
+                    UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+                ),
+                "Set HAL input stream format"
+            )
+
+            var callback = AURenderCallbackStruct(
+                inputProc: halInputRenderCallback,
+                inputProcRefCon: Unmanaged.passUnretained(self).toOpaque()
+            )
+            try check(
+                AudioUnitSetProperty(
+                    unit,
+                    kAudioOutputUnitProperty_SetInputCallback,
+                    kAudioUnitScope_Global,
+                    0,
+                    &callback,
+                    UInt32(MemoryLayout<AURenderCallbackStruct>.size)
+                ),
+                "Set HAL input callback"
+            )
+
+            try check(AudioUnitInitialize(unit), "Initialize HAL input")
+            audioUnit = unit
+            try check(AudioOutputUnitStart(unit), "Start HAL input")
+        } catch {
+            AudioUnitUninitialize(unit)
+            AudioComponentInstanceDispose(unit)
+            audioUnit = nil
+            throw error
+        }
+    }
+
+    private func stopHALInput() {
+        guard let unit = audioUnit else { return }
+        AudioOutputUnitStop(unit)
+        AudioUnitUninitialize(unit)
+        AudioComponentInstanceDispose(unit)
+        audioUnit = nil
+    }
+
+    private func check(_ status: OSStatus, _ operation: String) throws {
+        guard status == noErr else {
+            throw CaptureError.audioUnitSetup(operation, status)
+        }
+    }
+
+    fileprivate func renderInput(ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+                                 timeStamp: UnsafePointer<AudioTimeStamp>,
+                                 numberFrames: UInt32) -> OSStatus {
+        guard let unit = audioUnit else {
+            Log.audio.error("HAL input callback missing audio unit")
+            return noErr
+        }
+        guard let format = inputFormat else {
+            Log.audio.error("HAL input callback missing input format")
+            return noErr
+        }
+        guard let buffer = Self.makeRenderBuffer(format: format, numberFrames: numberFrames) else {
+            Log.audio.error("HAL input buffer allocation failed")
+            return noErr
+        }
+
+        let status = AudioUnitRender(
+            unit,
+            ioActionFlags,
+            timeStamp,
+            1,
+            numberFrames,
+            buffer.mutableAudioBufferList
+        )
+        guard status == noErr else {
+            Log.audio.error("HAL input render failed: \(status, privacy: .public)")
+            return status
+        }
+
+        handle(buffer: buffer)
+        return noErr
+    }
+
+    static func makeRenderBuffer(format: AVAudioFormat, numberFrames: UInt32) -> AVAudioPCMBuffer? {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: numberFrames) else {
+            return nil
+        }
+        buffer.frameLength = numberFrames
+        return buffer
     }
 
     // MARK: - Tap handler
@@ -205,4 +403,13 @@ public final class AudioCapture: @unchecked Sendable {
         for i in 0..<frames { samples[i] = ptr[i] }
         return samples
     }
+}
+
+private let halInputRenderCallback: AURenderCallback = { refCon, ioActionFlags, timeStamp, _, numberFrames, _ in
+    let capture = Unmanaged<AudioCapture>.fromOpaque(refCon).takeUnretainedValue()
+    return capture.renderInput(
+        ioActionFlags: ioActionFlags,
+        timeStamp: timeStamp,
+        numberFrames: numberFrames
+    )
 }
